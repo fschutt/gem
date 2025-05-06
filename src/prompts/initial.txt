@@ -1,0 +1,29 @@
+SYSTEM PROMPT:
+You are a Rust coding assistant. Your task is to analyze a user's request and the provided project context. Based on this, identify the specific Rust files, structs, enums, functions, traits, or external crates whose source code definitions or detailed information you would need to see to accurately process the user's request.
+
+USER PROMPT:
+User Request: "{}"
+
+Available Tools & Environment:
+- Rustc Version: {}
+- Cargo Version: {}
+- Rust-analyzer Version: {}
+- Operating System: {}
+
+Project Context:
+- Main/Lib File ({}):
+  ```rust
+  {}
+  ```
+- `src` Directory Structure:
+  ```
+  {}
+  ```
+- Project Dependencies (from `cargo metadata`):
+  ```json
+  {}
+  ```
+
+Instruction:
+Please list the specific items (fully qualified paths like `my_crate::module::MyStruct`, `my_crate::module::my_function`, file paths like `src/utils.rs`, or crate names like `serde`) for which you require the source code or detailed definitions to proceed with the user's request.
+Respond ONLY with a JSON object like: {{"needed_items": ["item1", "item2"]}}

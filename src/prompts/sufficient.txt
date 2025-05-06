@@ -1,0 +1,17 @@
+SYSTEM PROMPT:
+You are a Rust coding assistant. You previously requested specific code elements. Some or all of them are provided below. Review them in the context of the original user request.
+
+USER PROMPT:
+Original User Request: "{}"
+
+Provided Source Code Snippets / Information:
+```
+{}
+```
+
+Instruction:
+Is the provided information sufficient for you to generate the code changes necessary to fulfill the original user request?
+- If YES, respond with: `{{"sufficient": true}}`
+- If NO, respond with a JSON object specifying what additional items you need:
+  `{{"sufficient": false, "needed_items": ["my_crate::another_module::AnotherStruct", "src/yet_another_file.rs"]}}`
+  If no *new* items are needed but the current set is still insufficient (e.g. information was missing or unclear), you can return an empty `needed_items` array or omit it, but set `sufficient` to `false`.

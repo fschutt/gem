@@ -586,7 +586,7 @@ Please analyze the errors and provide a corrected set of changes and tests.
     };
 
     format!(
-        include_str!("prompts/changes.txt"),
+        include_str!("prompts/change.txt"),
         test_instruction, user_request, data_str, failure_prompt_addition, test_instruction
     )
 }

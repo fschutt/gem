@@ -1,6 +1,6 @@
 # gem
 
-Rust-specific coding agent for Gemini Thinking
+Rust coding agent for Gemini Thinking
 
 ## About
 

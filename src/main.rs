@@ -1,3 +1,4 @@
+use cache::Session;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -10,6 +11,7 @@ use std::process::Command;
 use ignore::WalkBuilder;
 
 // Bring in CLI parsing from cli.rs
+mod cache;
 mod cli;
 mod locatesource;
 mod parser;
@@ -148,6 +150,14 @@ fn main() -> Result<()> {
         env::var("GEM_KEY").map_err(|_| "GEM_KEY environment variable not set.")?
     };
 
+    // Create session ID from CLI args
+    let args_str = format!("{:?}", args);
+    let session_id = Session::compute_hash(&args_str);
+    println!("gem: Session ID: {}", session_id);
+
+    // Initialize session
+    let mut session = Session::new(&session_id);
+
     // --- 0. Environment and Dependency Checks ---
     check_dependencies(&project_root)?;
 
@@ -165,19 +175,26 @@ fn main() -> Result<()> {
 
     // --- First Gemini Call: What data is needed? ---
     println!("gem: Asking Gemini what information it needs...");
-    let gemini_response_str = clean_gemini_api_json(call_real_gemini_api(
+
+    // Accumulate initial prompt
+    session.append_to_prompt("initial", &first_prompt)?;
+
+    // Use session with API call
+    let gemini_response_str = clean_gemini_api_json(call_gemini_api_with_session(
+        &session,
         &gemini_api_key,
+        "initial",
         &first_prompt,
         FLASH_MODEL_NAME,
     )?);
-    let _ = std::fs::write("./flash_first_response.txt", &gemini_response_str);
+
     let needed_items_response: GeminiNeededItemsResponse =
         serde_json::from_str(&gemini_response_str)?;
 
     let mut current_needed_items = needed_items_response.needed_items;
 
     // --- 2 & 3. Focused Source Code Extraction & Sufficiency Check Loop ---
-    let mut gathered_data_for_gemini: HashMap<String, String> = HashMap::new();
+    let mut gathered_data_for_gemini: HashMap<String, String> = session.gathered_data.clone();
     let mut data_gathering_iterations = 0;
     let mut verification_attempt = 0;
     let mut code_change_attempt = 0;
@@ -200,38 +217,35 @@ fn main() -> Result<()> {
         for item_path_or_qname in &current_needed_items {
             if !gathered_data_for_gemini.contains_key(item_path_or_qname) {
                 match query_rust_analyzer_for_item_definition(&project_root, item_path_or_qname) {
-                    Ok(Some(content)) => {
-                        gathered_data_for_gemini.insert(item_path_or_qname.clone(), content);
-                    }
-                    Ok(None) => {
-                        gathered_data_for_gemini.insert(
-                            item_path_or_qname.clone(),
-                            format!(
-                                "// GEM_NOTE: Definition for {} not found.",
-                                item_path_or_qname
-                            ),
-                        );
+                    Ok(content) => {
+                        gathered_data_for_gemini
+                            .insert(item_path_or_qname.clone(), content.clone());
+                        session.add_data(item_path_or_qname, &content);
                     }
                     Err(e) => {
-                        eprintln!(
-                            "gem: ERROR: Failed to query for {}: {}",
+                        let error_msg = format!(
+                            "// GEM_NOTE: Error querying for {}: {}",
                             item_path_or_qname, e
                         );
-                        gathered_data_for_gemini.insert(
-                            item_path_or_qname.clone(),
-                            format!(
-                                "// GEM_NOTE: Error querying for {}: {}",
-                                item_path_or_qname, e
-                            ),
-                        );
+                        eprintln!("gem: ERROR: {}", error_msg);
+                        gathered_data_for_gemini
+                            .insert(item_path_or_qname.clone(), error_msg.clone());
+                        session.add_data(item_path_or_qname, &error_msg);
                     }
                 }
             }
         }
+
+        // Save session data
+        session.save()?;
+
         current_needed_items.clear();
 
         let sufficiency_prompt =
             construct_sufficiency_check_prompt(&args.user_request, &gathered_data_for_gemini);
+
+        // Accumulate sufficient prompt
+        session.append_to_prompt("sufficient", &sufficiency_prompt)?;
 
         if args.debug_mode == Some(crate::cli::DebugMode::Sufficient) {
             println!(
@@ -245,17 +259,34 @@ fn main() -> Result<()> {
 
         println!("gem: Asking Gemini if gathered data is sufficient...");
 
-        // NOTE: This still uses the mock.
-        let gemini_sufficiency_response_str = clean_gemini_api_json(call_gemini_api_mock(
-            &mut verification_attempt,
-            &mut code_change_attempt,
-            &gemini_api_key,
-            &sufficiency_prompt,
-            "GeminiSufficiencyResponse", // Mock needs this hint
-                                         // FLASH_MODEL_NAME, // For real API call
-        )?);
+        // Check session for sufficiency response
+        let gemini_sufficiency_response_str;
+
+        if let Some(cached_response) =
+            session.get_cached_response("sufficient", &sufficiency_prompt)
+        {
+            println!("gem: Using cached sufficiency response");
+            gemini_sufficiency_response_str = cached_response;
+        } else {
+            gemini_sufficiency_response_str = call_gemini_api_mock(
+                &mut verification_attempt,
+                &mut code_change_attempt,
+                &gemini_api_key,
+                &sufficiency_prompt,
+                "GeminiSufficiencyResponse",
+            )?;
+
+            // Save to session
+            session.save_prompt_and_response(
+                "sufficient",
+                &sufficiency_prompt,
+                &gemini_sufficiency_response_str,
+            )?;
+        }
+
+        let cleaned_response = clean_gemini_api_json(gemini_sufficiency_response_str);
         let sufficiency_response: GeminiSufficiencyResponse =
-            serde_json::from_str(&gemini_sufficiency_response_str)?;
+            serde_json::from_str(&cleaned_response)?;
 
         if sufficiency_response.sufficient {
             break;
@@ -308,6 +339,9 @@ fn main() -> Result<()> {
             &args.verify_with,
         );
 
+        // Accumulate change prompt
+        session.append_to_prompt("change", &code_gen_prompt)?;
+
         if args.debug_mode == Some(crate::cli::DebugMode::Changes) && verification_attempt == 1 {
             println!("\n--- DEBUG: CODE GENERATION PROMPT (Attempt 1) ---");
             println!("{}", code_gen_prompt);
@@ -316,14 +350,30 @@ fn main() -> Result<()> {
         }
 
         println!("gem: Asking Gemini to generate code changes...");
-        let gemini_code_gen_response_str = call_gemini_api_mock(
-            &mut verification_attempt,
-            &mut code_change_attempt,
-            &gemini_api_key,
-            &code_gen_prompt,
-            "GeminiCodeGenerationResponse", // Mock needs this hint
-                                            // THINKING_MODEL_NAME, // For real API call
-        )?;
+
+        // Check session for code generation
+        let gemini_code_gen_response_str;
+
+        if let Some(cached_response) = session.get_cached_response("change", &code_gen_prompt) {
+            println!("gem: Using cached code generation response");
+            gemini_code_gen_response_str = cached_response;
+        } else {
+            gemini_code_gen_response_str = call_gemini_api_mock(
+                &mut verification_attempt,
+                &mut code_change_attempt,
+                &gemini_api_key,
+                &code_gen_prompt,
+                "GeminiCodeGenerationResponse",
+            )?;
+
+            // Save to session
+            session.save_prompt_and_response(
+                "change",
+                &code_gen_prompt,
+                &gemini_code_gen_response_str,
+            )?;
+        }
+
         let code_gen_response: GeminiCodeGenerationResponse =
             serde_json::from_str(&gemini_code_gen_response_str)?;
 
@@ -685,6 +735,34 @@ Please analyze the errors and provide a corrected set of changes and tests.
     )
 }
 
+fn call_gemini_api_with_session(
+    session: &Session,
+    api_key: &str,
+    prompt_type: &str,
+    prompt_text: &str,
+    model_name: &str,
+) -> Result<String> {
+    // Check cache first
+    if let Some(cached_response) = session.get_cached_response(prompt_type, prompt_text) {
+        println!("gem: Using cached response for {} prompt", prompt_type);
+        return Ok(cached_response);
+    }
+
+    // Make API call if not in cache
+    println!(
+        "gem: No cached response found, calling Gemini API for {} prompt",
+        prompt_type
+    );
+    let response = call_real_gemini_api(api_key, prompt_text, model_name)?;
+
+    // Save prompt and response
+    session
+        .save_prompt_and_response(prompt_type, prompt_text, &response)
+        .map_err(|e| format!("Failed to save {} prompt and response: {}", prompt_type, e))?;
+
+    Ok(response)
+}
+
 fn call_real_gemini_api(api_key: &str, prompt_text: &str, model_name: &str) -> Result<String> {
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
@@ -846,52 +924,19 @@ fn clean_gemini_api_json(s: String) -> String {
 fn query_rust_analyzer_for_item_definition(
     project_root: &Path,
     item_qname_or_path: &str,
-) -> Result<Option<String>> {
+) -> Result<String> {
     println!("gem: Querying for item: {}", item_qname_or_path);
 
-    // For file paths, just read the file
-    if item_qname_or_path.ends_with(".rs") || item_qname_or_path.starts_with("src/") {
-        let file_path = project_root.join(item_qname_or_path);
-        if file_path.exists() {
-            let content = fs::read_to_string(&file_path)?;
-            return Ok(Some(content));
-        } else {
-            return Ok(None);
+    // First, try to use locatesource module
+    match locatesource::retrieve_item_source(project_root, item_qname_or_path) {
+        Ok(content) => {
+            println!("gem: Successfully retrieved item using locatesource");
+            return Ok(content);
         }
-    }
-
-    // For qualified names, parse all files and search for the item
-    let symbols = match parser::parse_directory(project_root) {
-        Ok(s) => s,
-        Err(e) => return Err(format!("Failed to parse project: {}", e).into()),
-    };
-
-    // Find the item in the symbols map
-    if let Some(info) = symbols.get(item_qname_or_path) {
-        // Return the hover text with file path info
-        let file_path = Path::new(&info.source_vertex_id);
-        let content = if file_path.exists() {
-            format!("// From file: {:?}\n{}", file_path, info.hover_text)
-        } else {
-            info.hover_text.clone()
-        };
-
-        Ok(Some(content))
-    } else {
-        // Try partial matches (e.g., looking for struct fields)
-        let matches: Vec<_> = symbols
-            .iter()
-            .filter(|(k, _)| k.contains(item_qname_or_path))
-            .collect();
-
-        if !matches.is_empty() {
-            let mut content = String::from("// Multiple matches found:\n");
-            for (key, info) in matches {
-                content.push_str(&format!("// - {}: {:?}\n", key, info.symbol_type));
-            }
-            Ok(Some(content))
-        } else {
-            Ok(None)
+        Err(e) => {
+            // If not found with locatesource, fall back to original logic
+            eprintln!("gem: Could not resolve with locatesource: {}", e);
+            Err(e.to_string().into())
         }
     }
 }

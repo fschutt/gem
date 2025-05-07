@@ -222,10 +222,15 @@ impl<'ast> Visit<'ast> for SymbolCollector {
     fn visit_item_fn(&mut self, i: &'ast ItemFn) {
         let doc = self.extract_doc(&i.attrs);
 
-        // Determine if this is a method or a function
-        let symbol_type = if !self.current_path.is_empty()
-            && self.current_path.last().unwrap().starts_with("impl ")
-        {
+        // First parameter being &self or &mut self indicates a method
+        let is_method = i
+            .sig
+            .inputs
+            .iter()
+            .next()
+            .map_or(false, |arg| matches!(arg, syn::FnArg::Receiver(_)));
+
+        let symbol_type = if is_method {
             SymbolType::Method
         } else {
             SymbolType::Function
@@ -331,6 +336,112 @@ impl<'ast> Visit<'ast> for SymbolCollector {
         visit::visit_item_fn(self, i);
     }
 
+    fn visit_impl_item_fn(&mut self, i: &'ast syn::ImplItemFn) {
+        let doc = self.extract_doc(&i.attrs);
+
+        // Capture function signature
+        let mut signature = String::new();
+
+        // Check if function is async
+        let is_async = i.sig.asyncness.is_some();
+        if is_async {
+            signature.push_str("async ");
+        }
+
+        signature.push_str("fn ");
+        signature.push_str(&i.sig.ident.to_string());
+        signature.push('(');
+
+        // Add function arguments
+        for (idx, input) in i.sig.inputs.iter().enumerate() {
+            if idx > 0 {
+                signature.push_str(", ");
+            }
+
+            match input {
+                syn::FnArg::Receiver(r) => {
+                    if r.reference.is_some() {
+                        signature.push('&');
+                        if let Some(lt) = &r.lifetime() {
+                            signature.push('\'');
+                            signature.push_str(&lt.ident.to_string());
+                            signature.push(' ');
+                        }
+                        if r.mutability.is_some() {
+                            signature.push_str("mut ");
+                        }
+                    } else if r.mutability.is_some() {
+                        signature.push_str("mut ");
+                    }
+                    signature.push_str("self");
+                }
+                syn::FnArg::Typed(pat_type) => {
+                    // Same type handling as in visit_item_fn
+                    if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                        signature.push_str(&pat_ident.ident.to_string());
+                        signature.push_str(": ");
+
+                        // Type extraction (same as in visit_item_fn)
+                        let type_str = match &*pat_type.ty {
+                            syn::Type::Path(type_path) => {
+                                if let Some(segment) = type_path.path.segments.last() {
+                                    segment.ident.to_string()
+                                } else {
+                                    "unknown".to_string()
+                                }
+                            }
+                            syn::Type::Reference(type_ref) => {
+                                let mut ref_str = String::from("&");
+                                if type_ref.mutability.is_some() {
+                                    ref_str.push_str("mut ");
+                                }
+                                if let syn::Type::Path(type_path) = &*type_ref.elem {
+                                    if let Some(segment) = type_path.path.segments.last() {
+                                        ref_str.push_str(&segment.ident.to_string());
+                                    } else {
+                                        ref_str.push_str("unknown");
+                                    }
+                                } else {
+                                    ref_str.push_str("unknown");
+                                }
+                                ref_str
+                            }
+                            _ => "unknown".to_string(),
+                        };
+
+                        signature.push_str(&type_str);
+                    }
+                }
+            }
+        }
+
+        signature.push(')');
+
+        // Return type handling
+        if let syn::ReturnType::Type(_, return_type) = &i.sig.output {
+            signature.push_str(" -> ");
+            let return_str = match &**return_type {
+                syn::Type::Path(type_path) => {
+                    if let Some(segment) = type_path.path.segments.last() {
+                        segment.ident.to_string()
+                    } else {
+                        "unknown".to_string()
+                    }
+                }
+                _ => "unknown".to_string(),
+            };
+            signature.push_str(&return_str);
+        }
+
+        let hover_text = format!("{}\nSignature: {}", doc, signature);
+
+        // Add method to symbol map with proper type
+        self.add_symbol(&i.sig.ident.to_string(), SymbolType::Method, hover_text);
+
+        // Continue visiting nested items
+        visit::visit_impl_item_fn(self, i);
+    }
+
     fn visit_item_trait(&mut self, i: &'ast ItemTrait) {
         let doc = self.extract_doc(&i.attrs);
         self.add_symbol(&i.ident.to_string(), SymbolType::Trait, doc);
@@ -341,12 +452,7 @@ impl<'ast> Visit<'ast> for SymbolCollector {
     }
 
     fn visit_item_impl(&mut self, i: &'ast ItemImpl) {
-        let impl_name = if let Some((_, path, _)) = &i.trait_ {
-            format!("impl {} for", path.segments.last().unwrap().ident)
-        } else {
-            "impl".to_string()
-        };
-
+        // Get the type name for the impl
         let type_name = match &*i.self_ty {
             syn::Type::Path(type_path) => {
                 if let Some(segment) = type_path.path.segments.last() {
@@ -358,11 +464,17 @@ impl<'ast> Visit<'ast> for SymbolCollector {
             _ => "Unknown".to_string(),
         };
 
-        let impl_full_name = format!("{} {}", impl_name, type_name);
+        // Store original path components
+        let original_path = self.current_path.clone();
 
-        self.enter_module(&impl_full_name);
+        // Use the type name directly rather than "impl Type"
+        self.enter_module(&type_name);
+
+        // Visit all impl items
         visit::visit_item_impl(self, i);
-        self.exit_module();
+
+        // Restore the original path
+        self.current_path = original_path;
     }
 
     fn visit_item_const(&mut self, i: &'ast ItemConst) {

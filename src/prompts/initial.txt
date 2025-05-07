@@ -11,19 +11,22 @@ Available Tools & Environment:
 - Operating System: {}
 
 Project Context:
-- Main/Lib File ({}):
-  ```rust
-  {}
-  ```
 - `src` Directory Structure:
   ```
   {}
   ```
-- Project Dependencies (from `cargo metadata`):
-  ```json
+- Project Dependencies (from `cargo tree`):
+  ```
+  {}
+  ```
+- Project Symbols (from LSIF):
+  ```
   {}
   ```
 
 Instruction:
-Please list the specific items (fully qualified paths like `my_crate::module::MyStruct`, `my_crate::module::my_function`, file paths like `src/utils.rs`, or crate names like `serde`) for which you require the source code or detailed definitions to proceed with the user's request.
-Respond ONLY with a JSON object like: {{"needed_items": ["item1", "item2"]}}
+Please list the specific items (fully qualified paths like `my_crate::module::MyStruct`, `my_crate::module::my_function`, file 
+paths like `src/prompt.txt`, or crate names like `serde`: do not request entire Rust files, instead, use module names) for which 
+you require the source code or detailed definitions to proceed with the user's request.
+
+Respond ONLY with a JSON object like: {{"needed_items": ["crate::module::item1", "dependency::othermodule::ExampleStruct"]}}

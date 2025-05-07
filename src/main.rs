@@ -11,8 +11,7 @@ use ignore::WalkBuilder;
 
 // Bring in CLI parsing from cli.rs
 mod cli;
-use cli::DebugMode;
-
+mod locatesource;
 mod parser;
 
 // --- Gemini API Model Names ---
@@ -157,7 +156,7 @@ fn main() -> Result<()> {
     let initial_context = gather_initial_project_info(&project_root)?;
     let first_prompt = construct_first_gemini_prompt(&args.user_request, &initial_context);
 
-    if args.debug_mode == Some(DebugMode::Initial) {
+    if args.debug_mode == Some(crate::cli::DebugMode::Initial) {
         println!("\n--- DEBUG: INITIAL PROMPT ---");
         println!("{}", first_prompt);
         println!("--- END DEBUG: INITIAL PROMPT ---");
@@ -234,7 +233,7 @@ fn main() -> Result<()> {
         let sufficiency_prompt =
             construct_sufficiency_check_prompt(&args.user_request, &gathered_data_for_gemini);
 
-        if args.debug_mode == Some(DebugMode::Sufficient) {
+        if args.debug_mode == Some(crate::cli::DebugMode::Sufficient) {
             println!(
                 "\n--- DEBUG: SUFFICIENCY PROMPT (Iteration {}) ---",
                 data_gathering_iterations
@@ -245,7 +244,7 @@ fn main() -> Result<()> {
         }
 
         println!("gem: Asking Gemini if gathered data is sufficient...");
-        
+
         // NOTE: This still uses the mock.
         let gemini_sufficiency_response_str = clean_gemini_api_json(call_gemini_api_mock(
             &mut verification_attempt,
@@ -263,7 +262,8 @@ fn main() -> Result<()> {
         } else {
             if !sufficiency_response.needed_items.is_empty() {
                 current_needed_items.extend(
-                    sufficiency_response.needed_items
+                    sufficiency_response
+                        .needed_items
                         .into_iter()
                         .filter(|item| !gathered_data_for_gemini.contains_key(item)),
                 );
@@ -308,7 +308,7 @@ fn main() -> Result<()> {
             &args.verify_with,
         );
 
-        if args.debug_mode == Some(DebugMode::Changes) && verification_attempt == 1 {
+        if args.debug_mode == Some(crate::cli::DebugMode::Changes) && verification_attempt == 1 {
             println!("\n--- DEBUG: CODE GENERATION PROMPT (Attempt 1) ---");
             println!("{}", code_gen_prompt);
             println!("--- END DEBUG: CODE GENERATION PROMPT ---");
@@ -737,7 +737,6 @@ fn call_gemini_api_mock(
     prompt: &str,
     expected_response_type: &str,
 ) -> Result<String> {
-
     // api_key not used in mock, but kept for signature compatibility if we toggle
     println!();
 
@@ -761,14 +760,16 @@ fn call_gemini_api_mock(
                 let s = serde_json::to_string(&GeminiSufficiencyResponse {
                     sufficient: true,
                     needed_items: vec![],
-                }).unwrap_or_default();
+                })
+                .unwrap_or_default();
 
                 Ok(s)
             } else {
                 let s = serde_json::to_string(&GeminiSufficiencyResponse {
                     sufficient: false,
                     needed_items: vec!["my_crate::some_module::SomeOtherType".to_string()],
-                }).unwrap_or_default();
+                })
+                .unwrap_or_default();
                 Ok(s)
             }
         }
@@ -787,8 +788,7 @@ fn call_gemini_api_mock(
                     content: Some("use std::collections::HashMap;\n\npub fn hello() -> String { \"hello fixed\".to_string() }".to_string()),
                 }];
             } else {
-                explanation =
-                    "Initial attempt to refactor. Added a hello function.".to_string();
+                explanation = "Initial attempt to refactor. Added a hello function.".to_string();
                 changes = vec![CodeChange {
                     file_path: "src/lib.rs".to_string(),
                     action: CodeChangeAction::ReplaceContent,
@@ -847,10 +847,7 @@ fn query_rust_analyzer_for_item_definition(
     project_root: &Path,
     item_qname_or_path: &str,
 ) -> Result<Option<String>> {
-    println!(
-        "gem: Querying for item: {}",
-        item_qname_or_path
-    );
+    println!("gem: Querying for item: {}", item_qname_or_path);
 
     // For file paths, just read the file
     if item_qname_or_path.ends_with(".rs") || item_qname_or_path.starts_with("src/") {

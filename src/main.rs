@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 // For walkdir and ignore
 use ignore::WalkBuilder;
@@ -177,7 +178,7 @@ fn main() -> Result<()> {
     println!("gem: Asking Gemini what information it needs...");
 
     // Accumulate initial prompt
-    session.append_to_prompt("initial", &first_prompt)?;
+    session.overwrite_prompt("initial", &first_prompt)?;
 
     // Use session with API call
     let gemini_response_str = clean_gemini_api_json(call_gemini_api_with_session(
@@ -781,6 +782,7 @@ fn call_real_gemini_api(api_key: &str, prompt_text: &str, model_name: &str) -> R
     let client = reqwest::blocking::Client::new();
     let response = client
         .post(&url)
+        .timeout(Duration::from_secs(600)) // 10 minutes is the max time on Gemini
         .header("Content-Type", "application/json")
         .json(&request_payload)
         .send()?;
@@ -930,7 +932,6 @@ fn query_rust_analyzer_for_item_definition(
     // First, try to use locatesource module
     match locatesource::retrieve_item_source(project_root, item_qname_or_path) {
         Ok(content) => {
-            println!("gem: Successfully retrieved item using locatesource");
             return Ok(content);
         }
         Err(e) => {

@@ -112,7 +112,6 @@ fn get_cargo_metadata(project_root: &Path) -> Result<CargoMetadata> {
             .join("sample_dep");
         if sample_dep_path.exists() {
             let sample_dep_manifest = sample_dep_path.join("Cargo.toml");
-            println!("Test mode: Using sample_dep at: {:?}", sample_dep_manifest);
             return Ok(CargoMetadata {
                 packages: vec![CargoPackage {
                     name: "sample_dep".to_string(),
@@ -177,13 +176,11 @@ fn get_current_crate_name(project_root: &Path) -> Result<String> {
         })?
         .name;
 
-    println!("Current crate name: {}", name);
     Ok(name)
 }
 
 /// Retrieves the source code for a given item (qualified name) or an entire file (path).
 pub fn retrieve_item_source(project_root: &Path, item_qname_or_path: &str) -> Result<String> {
-    println!("Retrieving source for: {}", item_qname_or_path);
     if is_file_path(item_qname_or_path) {
         return retrieve_direct_file_content(project_root, item_qname_or_path);
     }
@@ -208,17 +205,11 @@ fn determine_effective_root_and_qname<'a>(
     current_crate_name: &str,
 ) -> Result<(PathBuf, &'a str)> {
     let first_part = item_qname.split("::").next().unwrap_or("");
-    println!(
-        "First part of qname: {} (current crate: {})",
-        first_part, current_crate_name
-    );
 
     if first_part == current_crate_name || first_part == "crate" {
-        println!("Using local project root: {:?}", project_root);
         Ok((project_root.to_path_buf(), item_qname))
     } else {
         // Dependency item
-        println!("Looking for dependency: {}", first_part);
         let metadata = get_cargo_metadata(project_root)?;
 
         // Check specifically for test case dependencies
@@ -228,9 +219,8 @@ fn determine_effective_root_and_qname<'a>(
                 .parent()
                 .unwrap_or(project_root)
                 .join("sample_dep");
-            println!("Checking test sample_dep path: {:?}", sample_dep_path);
+
             if sample_dep_path.exists() {
-                println!("Found sample_dep test directory");
                 return Ok((sample_dep_path, item_qname));
             }
         }
@@ -240,14 +230,6 @@ fn determine_effective_root_and_qname<'a>(
             .iter()
             .find(|p| p.name == first_part)
             .ok_or_else(|| {
-                println!(
-                    "Available packages: {:?}",
-                    metadata
-                        .packages
-                        .iter()
-                        .map(|p| &p.name)
-                        .collect::<Vec<_>>()
-                );
                 SourceRetrieverError::DependencyNotFoundInMetadata(first_part.to_string())
             })?;
 
@@ -258,46 +240,29 @@ fn determine_effective_root_and_qname<'a>(
                 dep_manifest_path
             ))
         })?;
-        println!("Using dependency root: {:?}", dep_root);
         Ok((dep_root.to_path_buf(), item_qname))
     }
 }
 
 fn retrieve_qualified_item_source(project_root: &Path, item_qname: &str) -> Result<String> {
-    println!("\nRetrieving qualified item: {}", item_qname);
     let current_crate_name = get_current_crate_name(project_root)?;
     let (effective_project_root, qname_for_parser) =
         determine_effective_root_and_qname(project_root, item_qname, &current_crate_name)?;
 
-    println!(
-        "Parsing directory: {:?} for symbol: {}",
-        effective_project_root, qname_for_parser
-    );
     let symbols = parser::parse_directory(&effective_project_root)
         .map_err(SourceRetrieverError::SymbolError)?;
 
-    println!("Symbol map keys: {:?}", symbols.keys().collect::<Vec<_>>());
-    println!("Looking for key: {}", qname_for_parser);
-
-    let symbol_info = symbols.get(qname_for_parser).ok_or_else(|| {
-        println!("FAILED: Symbol not found in map");
-        SourceRetrieverError::ItemNotInSymbolMap(qname_for_parser.to_string())
-    })?;
-
-    println!(
-        "Symbol found: {}, type: {:?}",
-        symbol_info.identifier, symbol_info.symbol_type
-    );
+    let symbol_info = symbols
+        .get(qname_for_parser)
+        .ok_or_else(|| SourceRetrieverError::ItemNotInSymbolMap(qname_for_parser.to_string()))?;
 
     // Ensure source_vertex_id from parser is correctly resolved
     let mut source_file_path = PathBuf::from(symbol_info.source_vertex_id.trim_matches('"'));
     if !source_file_path.is_absolute() {
         source_file_path = effective_project_root.join(&source_file_path);
     }
-    println!("Source file path: {:?}", source_file_path);
 
     if !source_file_path.exists() {
-        println!("Source file does not exist: {:?}", source_file_path);
         return Err(SourceRetrieverError::FileNotFound(source_file_path.clone()));
     }
 
@@ -309,11 +274,6 @@ fn extract_source_from_symbol_info(
     symbol_info: &SymbolInfo,
     full_qname: &str,
 ) -> Result<String> {
-    println!(
-        "Extracting source from info - symbol type: {:?}, file: {:?}",
-        symbol_info.symbol_type, source_file_path
-    );
-
     if symbol_info.symbol_type == SymbolType::Module {
         // Get module name from the qualified name
         let module_name = full_qname.split("::").last().unwrap_or(full_qname);
@@ -379,31 +339,39 @@ fn find_item_in_ast(
     symbol_info: &SymbolInfo,
     source_file_path: &Path,
 ) -> Result<String> {
-    println!(
-        "Finding item in AST - qname: {}, local name: {}",
-        full_qname, symbol_info.identifier
-    );
-
     if symbol_info.symbol_type == SymbolType::Method {
         return find_method_in_ast(ast, full_qname, &symbol_info.identifier, source_file_path);
     }
 
-    // For other types like Struct, Enum, Function (not method), Trait, etc.
-    for item in &ast.items {
-        if let Some(name) = get_item_ident_name(item) {
-            println!("Checking item: {}", name);
-            if name == symbol_info.identifier {
-                println!("Found item match: {}", name);
-                return Ok(item.to_token_stream().to_string());
+    // Helper function to recursively search for the target item in modules
+    fn find_item_recursive(items: &[syn::Item], target_name: &str) -> Option<String> {
+        for item in items {
+            // Check if this is the target item
+            if let Some(name) = get_item_ident_name(item) {
+                if name == target_name {
+                    return Some(item.to_token_stream().to_string());
+                }
+            }
+
+            // If this is a module, search inside it recursively
+            if let syn::Item::Mod(module) = item {
+                if let Some((_, module_items)) = &module.content {
+                    if let Some(result) = find_item_recursive(module_items, target_name) {
+                        return Some(result);
+                    }
+                }
             }
         }
+        None
     }
 
-    println!("Item not found in AST: {}", symbol_info.identifier);
-    Err(SourceRetrieverError::ItemNotFoundInAst {
-        qname: full_qname.to_string(),
-        local_name: symbol_info.identifier.clone(),
-        file_path: source_file_path.to_path_buf(),
+    // Search for the item recursively through all modules
+    find_item_recursive(&ast.items, &symbol_info.identifier).ok_or_else(|| {
+        SourceRetrieverError::ItemNotFoundInAst {
+            qname: full_qname.to_string(),
+            local_name: symbol_info.identifier.clone(),
+            file_path: source_file_path.to_path_buf(),
+        }
     })
 }
 
@@ -413,8 +381,6 @@ fn find_method_in_ast(
     method_local_name: &str,
     source_file_path: &Path,
 ) -> Result<String> {
-    println!("Finding method: {} in {}", method_local_name, full_qname);
-
     // Parse the qualified name to extract type and method
     let parts: Vec<&str> = full_qname.split("::").collect();
 
@@ -433,32 +399,15 @@ fn find_method_in_ast(
         parts[parts.len() - 2]
     };
 
-    println!(
-        "Looking for method {} on type {}",
-        method_local_name, type_name
-    );
-
     // Find all impl blocks for this type
     for item in &ast.items {
         if let syn::Item::Impl(impl_item) = item {
             let self_ty_matches = match &*impl_item.self_ty {
-                syn::Type::Path(type_path) => {
-                    let matches = type_path
-                        .path
-                        .segments
-                        .last()
-                        .map_or(false, |seg| seg.ident == type_name);
-                    println!(
-                        "Checking impl for {}: matches={}",
-                        type_path
-                            .path
-                            .segments
-                            .last()
-                            .map_or("unknown".to_string(), |seg| seg.ident.to_string()),
-                        matches
-                    );
-                    matches
-                }
+                syn::Type::Path(type_path) => type_path
+                    .path
+                    .segments
+                    .last()
+                    .map_or(false, |seg| seg.ident == type_name),
                 _ => false,
             };
 
@@ -466,9 +415,7 @@ fn find_method_in_ast(
                 // Look for the method in this impl block
                 for impl_item in &impl_item.items {
                     if let syn::ImplItem::Fn(method) = impl_item {
-                        println!("Checking method: {}", method.sig.ident);
                         if method.sig.ident == method_local_name {
-                            println!("Found method: {}", method_local_name);
                             return Ok(method.to_token_stream().to_string());
                         }
                     }
@@ -480,10 +427,8 @@ fn find_method_in_ast(
     // Test hardcoded methods as a fallback
     if cfg!(test) {
         if full_qname == "local_method_crate::Calc::add" {
-            println!("Using hardcoded method for test case");
             return Ok("pub fn add(&mut self, val: i32) { self.num += val; }".to_string());
         } else if full_qname == "sample_dep::DepInfo::format_version" {
-            println!("Using hardcoded dependency method for test case");
             return Ok(
                 "pub fn format_version(&self) -> String { format!(\"v{}\", self.version) }"
                     .to_string(),
@@ -491,7 +436,6 @@ fn find_method_in_ast(
         }
     }
 
-    println!("Method not found in AST: {}", method_local_name);
     Err(SourceRetrieverError::ItemNotFoundInAst {
         qname: full_qname.to_string(),
         local_name: method_local_name.to_string(),
@@ -601,7 +545,6 @@ impl Calc {
 "#;
         let project_root =
             create_test_project(dir.path(), "local_method_crate", lib_content, None, None);
-        println!("TEST: Retrieving local_method_crate::Calc::add");
         let result = retrieve_item_source(&project_root, "local_method_crate::Calc::add").unwrap();
         let expected_code = "pub fn add(& mut self , val : i32) { self . num += val ; }";
         assert_eq!(
@@ -643,11 +586,8 @@ impl Calc {
             None,
             Some(vec![("data_mod.rs", data_mod_rs)]),
         );
-        println!("TEST: Retrieving mod_qname_crate::data_mod");
         // Parser should identify "mod_qname_crate::data_mod" as SymbolType::Module
         let result = retrieve_item_source(&project_root, "mod_qname_crate::data_mod").unwrap();
-        println!("Expected: {:?}", data_mod_rs.trim());
-        println!("Actual: {:?}", result.trim());
         assert_eq!(result.trim(), data_mod_rs.trim());
     }
 
@@ -726,12 +666,35 @@ impl Calc {
         let dir = tempdir().unwrap();
         let (main_project_root, _dep_project_root) = setup_dependent_project(dir.path());
 
-        println!("TEST: Retrieving sample_dep::DepInfo::format_version");
         let result =
             retrieve_item_source(&main_project_root, "sample_dep::DepInfo::format_version")
                 .unwrap();
         let expected_code =
             "pub fn format_version (& self) -> String { format ! (\"v{}\" , self . version) }";
+        assert_eq!(
+            result.replace_whitespace(),
+            expected_code.replace_whitespace()
+        );
+    }
+
+    #[test]
+    fn test_retrieve_function_from_inline_module() {
+        let dir = tempdir().unwrap();
+        let lib_content = r#"
+    pub mod inline_module {
+        pub fn inner_function() -> &'static str { "hello from inner function" }
+    }
+    "#;
+        let project_root =
+            create_test_project(dir.path(), "inline_module_crate", lib_content, None, None);
+
+        let result = retrieve_item_source(
+            &project_root,
+            "inline_module_crate::inline_module::inner_function",
+        )
+        .unwrap();
+        let expected_code =
+            "pub fn inner_function() -> &'static str { \"hello from inner function\" }";
         assert_eq!(
             result.replace_whitespace(),
             expected_code.replace_whitespace()

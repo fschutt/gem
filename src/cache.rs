@@ -116,6 +116,13 @@ impl Session {
     }
 
     /// Append to a prompt file (for accumulating sufficiency checks)
+    pub fn overwrite_prompt(&self, prompt_type: &str, content: &str) -> io::Result<()> {
+        let prompt_file = self.session_dir.join(format!("{}.txt", prompt_type));
+        fs::write(&prompt_file, content)?;
+        Ok(())
+    }
+
+    /// Append to a prompt file (for accumulating sufficiency checks)
     pub fn append_to_prompt(&self, prompt_type: &str, content: &str) -> io::Result<()> {
         let prompt_file = self.session_dir.join(format!("{}.txt", prompt_type));
 

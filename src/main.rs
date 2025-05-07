@@ -73,7 +73,7 @@ struct GeminiNeededItemsResponse {
 struct GeminiSufficiencyResponse {
     sufficient: bool,
     #[serde(default)]
-    needed_items: Option<Vec<String>>,
+    needed_items: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -134,16 +134,16 @@ fn main() -> Result<()> {
         )
     })?;
 
-    println!("GEM: Creating initial prompt with task and system info...");
-    println!("GEM: Project root: {:?}", project_root);
-    println!("GEM: Verification command: \"{}\"", args.verify_with);
+    println!("gem: Creating initial prompt with task and system info...");
+    println!("gem: Project root: {:?}", project_root);
+    println!("gem: Verification command: \"{}\"", args.verify_with);
 
     if args.no_test {
-        println!("GEM: Test generation disabled.");
+        println!("gem: Test generation disabled.");
     }
 
     let gemini_api_key = if let Some(mode) = args.debug_mode {
-        println!("GEM: DEBUG MODE ACTIVE: {}", mode);
+        println!("gem: DEBUG MODE ACTIVE: {}", mode);
         String::new()
     } else {
         env::var("GEM_KEY").map_err(|_| "GEM_KEY environment variable not set.")?
@@ -153,7 +153,7 @@ fn main() -> Result<()> {
     check_dependencies(&project_root)?;
 
     // --- 1. Initial Information Gathering ---
-    println!("\nGEM: Phase 1: Initial Information Gathering...");
+    println!("\ngem: Phase 1: Initial Information Gathering...");
     let initial_context = gather_initial_project_info(&project_root)?;
     let first_prompt = construct_first_gemini_prompt(&args.user_request, &initial_context);
 
@@ -165,7 +165,7 @@ fn main() -> Result<()> {
     }
 
     // --- First Gemini Call: What data is needed? ---
-    println!("GEM: Asking Gemini what information it needs...");
+    println!("gem: Asking Gemini what information it needs...");
     let gemini_response_str = clean_gemini_api_json(call_real_gemini_api(
         &gemini_api_key,
         &first_prompt,
@@ -174,46 +174,37 @@ fn main() -> Result<()> {
     let _ = std::fs::write("./flash_first_response.txt", &gemini_response_str);
     let needed_items_response: GeminiNeededItemsResponse =
         serde_json::from_str(&gemini_response_str)?;
+
     let mut current_needed_items = needed_items_response.needed_items;
-    println!(
-        "GEM: Gemini requests initial details for: {:?}",
-        current_needed_items
-    );
 
     // --- 2 & 3. Focused Source Code Extraction & Sufficiency Check Loop ---
     let mut gathered_data_for_gemini: HashMap<String, String> = HashMap::new();
     let mut data_gathering_iterations = 0;
+    let mut verification_attempt = 0;
+    let mut code_change_attempt = 0;
 
     loop {
         if data_gathering_iterations >= args.max_data_loops {
             eprintln!(
-                "GEM: ERROR: Exceeded maximum data gathering iterations ({}). Giving up.",
+                "gem: ERROR: Exceeded maximum data gathering iterations ({}). Giving up.",
                 args.max_data_loops
             );
             return Err("Max data gathering iterations reached.".into());
         }
         data_gathering_iterations += 1;
-        println!(
-            "\nGEM: Phase 2/3: Data Gathering Iteration {}/{}...",
-            data_gathering_iterations, args.max_data_loops
-        );
+        println!("\n");
 
         if current_needed_items.is_empty() && !gathered_data_for_gemini.is_empty() {
-            println!("GEM: No new items requested, but previous data was gathered. Assuming sufficient or Gemini will re-request.");
+            println!("gem: No new items requested, but previous data was gathered. Assuming sufficient or Gemini will re-request.");
         }
 
         for item_path_or_qname in &current_needed_items {
             if !gathered_data_for_gemini.contains_key(item_path_or_qname) {
-                println!("GEM: Querying for item: {}", item_path_or_qname);
                 match query_rust_analyzer_for_item_definition(&project_root, item_path_or_qname) {
                     Ok(Some(content)) => {
                         gathered_data_for_gemini.insert(item_path_or_qname.clone(), content);
                     }
                     Ok(None) => {
-                        println!(
-                            "GEM: WARN: Could not find definition for: {}",
-                            item_path_or_qname
-                        );
                         gathered_data_for_gemini.insert(
                             item_path_or_qname.clone(),
                             format!(
@@ -224,7 +215,7 @@ fn main() -> Result<()> {
                     }
                     Err(e) => {
                         eprintln!(
-                            "GEM: ERROR: Failed to query for {}: {}",
+                            "gem: ERROR: Failed to query for {}: {}",
                             item_path_or_qname, e
                         );
                         gathered_data_for_gemini.insert(
@@ -253,38 +244,34 @@ fn main() -> Result<()> {
             return Ok(());
         }
 
-        println!("GEM: Asking Gemini if gathered data is sufficient...");
+        println!("gem: Asking Gemini if gathered data is sufficient...");
+        
         // NOTE: This still uses the mock.
-        let gemini_sufficiency_response_str = call_gemini_api_mock(
+        let gemini_sufficiency_response_str = clean_gemini_api_json(call_gemini_api_mock(
+            &mut verification_attempt,
+            &mut code_change_attempt,
             &gemini_api_key,
             &sufficiency_prompt,
             "GeminiSufficiencyResponse", // Mock needs this hint
                                          // FLASH_MODEL_NAME, // For real API call
-        )?;
+        )?);
         let sufficiency_response: GeminiSufficiencyResponse =
             serde_json::from_str(&gemini_sufficiency_response_str)?;
 
         if sufficiency_response.sufficient {
-            println!("GEM: Gemini confirms data is sufficient.");
             break;
         } else {
-            println!("GEM: Gemini requires more data.");
-            if let Some(new_needed) = sufficiency_response.needed_items {
-                if new_needed.is_empty() {
-                    eprintln!("GEM: ERROR: Gemini reported data is not sufficient but did not specify new items. Giving up.");
-                    return Err("Gemini insufficient without new items.".into());
-                }
-                println!("GEM: Gemini newly requests: {:?}", new_needed);
+            if !sufficiency_response.needed_items.is_empty() {
                 current_needed_items.extend(
-                    new_needed
+                    sufficiency_response.needed_items
                         .into_iter()
                         .filter(|item| !gathered_data_for_gemini.contains_key(item)),
                 );
                 if current_needed_items.is_empty() && !gathered_data_for_gemini.is_empty() {
-                    println!("GEM: All newly requested items were already gathered. Proceeding to check sufficiency again.");
+                    println!("gem: All newly requested items were already gathered. Proceeding to check sufficiency again.");
                 }
             } else {
-                eprintln!("GEM: ERROR: Gemini reported data is not sufficient but did not specify what's needed. Giving up.");
+                eprintln!("gem: ERROR: Gemini reported data is not sufficient but did not specify what's needed. Giving up.");
                 return Err("Gemini insufficient without item list.".into());
             }
         }
@@ -292,20 +279,19 @@ fn main() -> Result<()> {
 
     // --- 4, 5, Git, 6. Code Generation, Application, Commit, and Verification Loop ---
     let mut verification_failures_context = String::new();
-    let mut verification_attempt = 0;
 
     loop {
         if verification_attempt >= args.max_verify_retries + 1 {
             eprintln!(
-                "GEM: ERROR: Exceeded maximum verification retries ({}). Giving up.",
+                "gem: ERROR: Exceeded maximum verification retries ({}). Giving up.",
                 args.max_verify_retries
             );
-            eprintln!("GEM: The last unverified changes might be committed. Please review your git history.");
+            eprintln!("gem: The last unverified changes might be committed. Please review your git history.");
             return Err("Max verification retries reached.".into());
         }
         verification_attempt += 1;
         println!(
-            "\nGEM: Phase 4/5/6: Code Generation & Verification Attempt {}/{}...",
+            "\ngem: Phase 3: Code Generation & Verification Attempt {}/{}...",
             verification_attempt,
             args.max_verify_retries + 1
         );
@@ -329,9 +315,10 @@ fn main() -> Result<()> {
             return Ok(());
         }
 
-        println!("GEM: Asking Gemini to generate code changes...");
-        // NOTE: This still uses the mock.
+        println!("gem: Asking Gemini to generate code changes...");
         let gemini_code_gen_response_str = call_gemini_api_mock(
+            &mut verification_attempt,
+            &mut code_change_attempt,
             &gemini_api_key,
             &code_gen_prompt,
             "GeminiCodeGenerationResponse", // Mock needs this hint
@@ -341,7 +328,7 @@ fn main() -> Result<()> {
             serde_json::from_str(&gemini_code_gen_response_str)?;
 
         println!(
-            "GEM: Gemini proposes changes: {}",
+            "gem: Gemini proposes changes: {}",
             code_gen_response.explanation
         );
 
@@ -353,38 +340,39 @@ fn main() -> Result<()> {
             }
         }
 
-        let commit_message = format!(
-            "gem: Automated change for \"{}\"\n\n{}\n\nAttempt: {}",
-            args.user_request, code_gen_response.explanation, verification_attempt
-        );
-        git_commit_mock(&project_root, &commit_message, verification_attempt > 1)?;
-
-        println!("GEM: Verifying changes with: \"{}\"", args.verify_with);
+        println!("gem: Verifying changes with: \"{}\"", args.verify_with);
         match execute_verification_command_mock(
             &mut verification_attempt,
             &project_root,
             &args.verify_with,
         ) {
             Ok(output) => {
-                println!("GEM: Verification successful!");
-                println!("Output:\n{}", output);
-                println!("\nGEM: Task completed successfully. Changes are committed.");
+                println!("gem: Verification successful!");
+                println!("gem: Output:\n{}", output);
+
+                let commit_message = format!(
+                    "gem: Automated change for \"{}\"\n\n{}\n\n",
+                    args.user_request, code_gen_response.explanation
+                );
+                git_commit_mock(&project_root, &commit_message, verification_attempt > 1)?;
+                println!("\ngem: Task completed successfully.");
+
                 return Ok(());
             }
             Err(e) => {
-                println!("GEM: Verification failed.");
+                println!("gem: Verification failed.");
                 verification_failures_context = e.to_string();
                 eprintln!("Error Output:\n{}", verification_failures_context);
 
                 if verification_attempt >= args.max_verify_retries + 1 {
-                    eprintln!("GEM: Max verification retries reached. The last (failed) attempt is committed (amended). Please review and fix manually.");
+                    eprintln!("gem: Max verification retries reached. The last (failed) attempt is committed (amended). Please review and fix manually.");
                     return Err(format!(
                         "Verification failed after max retries: {}",
                         verification_failures_context
                     )
                     .into());
                 }
-                println!("GEM: Will attempt to ask Gemini to fix the issues...");
+                println!("gem: Will attempt to ask Gemini to fix the issues...");
             }
         }
     }
@@ -394,7 +382,7 @@ fn main() -> Result<()> {
 
 fn check_dependencies(_project_root: &Path) -> Result<()> {
     // project_root not used here, but kept for consistency
-    println!("GEM: Checking dependencies (cargo, rustc, rust-analyzer)...");
+    println!("gem: Checking dependencies (cargo, rustc, rust-analyzer)...");
     let deps = ["cargo", "rustc", "rust-analyzer"];
     for dep in deps.iter() {
         let dep_cmd = if cfg!(windows) && *dep == "rust-analyzer" {
@@ -404,7 +392,7 @@ fn check_dependencies(_project_root: &Path) -> Result<()> {
         };
         match Command::new(dep_cmd).arg("--version").output() {
             Ok(output) if output.status.success() => {
-                // println!("GEM: {} found.", dep);
+                // println!("gem: {} found.", dep);
             }
             Ok(output) => {
                 let err_msg = format!(
@@ -423,7 +411,7 @@ fn check_dependencies(_project_root: &Path) -> Result<()> {
             }
         }
     }
-    println!("GEM: All dependencies found.");
+    println!("gem: All dependencies found.");
     Ok(())
 }
 
@@ -490,13 +478,13 @@ fn gather_initial_project_info(project_root: &Path) -> Result<HashMap<String, St
         )?,
     );
 
-    println!("GEM: Gathering project symbols...");
+    println!("gem: Gathering project symbols...");
     match crate::parser::get_project_symbols_string(project_root) {
         Ok(symbols) => {
             context.insert("project_symbols".to_string(), symbols);
         }
         Err(e) => {
-            eprintln!("GEM: WARN: Failed to parse project symbols: {}", e);
+            eprintln!("gem: WARN: Failed to parse project symbols: {}", e);
             context.insert(
                 "project_symbols".to_string(),
                 "// Failed to parse project symbols".to_string(),
@@ -587,7 +575,7 @@ fn generate_src_tree(src_dir_path: &Path) -> Result<String> {
                 ));
             }
             Err(err) => eprintln!(
-                "GEM: WARN: error walking directory {} for src_tree: {}",
+                "gem: WARN: error walking directory {} for src_tree: {}",
                 src_dir_path.display(),
                 err
             ),
@@ -697,69 +685,6 @@ Please analyze the errors and provide a corrected set of changes and tests.
     )
 }
 
-// Add these functions to src/main.rs
-
-// Generate LSIF data for a crate path
-fn generate_lsif_data(path: &Path) -> Result<String> {
-    println!("GEM: Generating LSIF data for {:?}...", path);
-    let output = Command::new("rust-analyzer")
-        .arg("lsif")
-        .arg(path)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "rust-analyzer lsif failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-
-    let string = String::from_utf8(output.stdout)?
-        .lines()
-        .filter(|s| s.starts_with("{"))
-        .collect::<Vec<_>>()
-        .join("\r\n");
-
-    std::fs::write("./out.lsif.txt", &string);
-
-    Ok(string)
-}
-
-// Resolve a crate name to its file path
-fn get_path_for_crate(project_root: &Path, crate_name: &str) -> Result<Option<PathBuf>> {
-    // For the current project
-    if crate_name.starts_with("gem::") || crate_name == "gem" {
-        return Ok(Some(project_root.to_path_buf()));
-    }
-
-    // For external crates, parse cargo metadata
-    let cargo_metadata = get_cargo_metadata_dependencies(project_root)?;
-    let metadata: serde_json::Value = serde_json::from_str(&cargo_metadata)?;
-
-    if let Some(packages) = metadata.get("packages").and_then(|p| p.as_array()) {
-        for package in packages {
-            if let Some(name) = package.get("name").and_then(|n| n.as_str()) {
-                if name == crate_name {
-                    if let Some(manifest_path) =
-                        package.get("manifest_path").and_then(|p| p.as_str())
-                    {
-                        let manifest_path = PathBuf::from(manifest_path);
-                        return Ok(Some(
-                            manifest_path
-                                .parent()
-                                .unwrap_or(&manifest_path)
-                                .to_path_buf(),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(None)
-}
-
 fn call_real_gemini_api(api_key: &str, prompt_text: &str, model_name: &str) -> Result<String> {
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
@@ -806,14 +731,15 @@ fn call_real_gemini_api(api_key: &str, prompt_text: &str, model_name: &str) -> R
 
 // --- Mock function (kept for now, main uses this) ---
 fn call_gemini_api_mock(
+    retry_count: &mut usize,
+    codegen_attempt: &mut usize,
     _api_key: &str,
     prompt: &str,
     expected_response_type: &str,
 ) -> Result<String> {
+
     // api_key not used in mock, but kept for signature compatibility if we toggle
-    println!("--- MOCK GEMINI API CALL ---");
-    // println!("API Key: {}...", &api_key.chars().take(4).collect::<String>());
-    // println!("Prompt for mock (type: {}):\n{}\n--- END PROMPT ---", expected_response_type, prompt);
+    println!();
 
     match expected_response_type {
         "GeminiNeededItemsResponse" => {
@@ -822,51 +748,52 @@ fn call_gemini_api_mock(
             } else {
                 "src/lib.rs"
             };
+            std::thread::sleep(std::time::Duration::from_secs(5));
             Ok(format!(
                 r#"{{"needed_items": ["{}", "my_crate::some_module::SomeStruct"]}}"#,
                 main_lib_path
             ))
         }
         "GeminiSufficiencyResponse" => {
-            static mut SUFFICIENCY_CALL_COUNT: u32 = 0;
-            unsafe {
-                SUFFICIENCY_CALL_COUNT += 1;
-                if SUFFICIENCY_CALL_COUNT > 1 || prompt.contains("SomeStruct") {
-                    println!("Mock: Responding SUFFICIENT");
-                    Ok(r#"{{"sufficient": true}}"#.to_string())
-                } else {
-                    println!("Mock: Responding NOT SUFFICIENT, needs SomeOtherType");
-                    Ok(r#"{{"sufficient": false, "needed_items": ["my_crate::some_module::SomeOtherType"]}}"#.to_string())
-                }
+            *retry_count += 1;
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            if *retry_count > 1 || prompt.contains("SomeStruct") {
+                let s = serde_json::to_string(&GeminiSufficiencyResponse {
+                    sufficient: true,
+                    needed_items: vec![],
+                }).unwrap_or_default();
+
+                Ok(s)
+            } else {
+                let s = serde_json::to_string(&GeminiSufficiencyResponse {
+                    sufficient: false,
+                    needed_items: vec!["my_crate::some_module::SomeOtherType".to_string()],
+                }).unwrap_or_default();
+                Ok(s)
             }
         }
         "GeminiCodeGenerationResponse" => {
-            static mut CODE_GEN_ATTEMPT: u32 = 0;
             let explanation: String;
             let changes: Vec<CodeChange>;
-            unsafe {
-                CODE_GEN_ATTEMPT += 1;
-                if CODE_GEN_ATTEMPT == 1 && prompt.contains("Previous Attempt Feedback") {
-                    panic!("Mock Error: Sent failure context on first code gen attempt!");
-                }
 
-                if prompt.contains("Previous Attempt Feedback") || CODE_GEN_ATTEMPT > 1 {
-                    explanation =
-                        "Fixed the previous build error by adding a missing import.".to_string();
-                    changes = vec![CodeChange {
-                        file_path: "src/lib.rs".to_string(),
-                        action: CodeChangeAction::ReplaceContent,
-                        content: Some("use std::collections::HashMap;\n\npub fn hello() -> String { \"hello fixed\".to_string() }".to_string()),
-                    }];
-                } else {
-                    explanation =
-                        "Initial attempt to refactor. Added a hello function.".to_string();
-                    changes = vec![CodeChange {
-                        file_path: "src/lib.rs".to_string(),
-                        action: CodeChangeAction::ReplaceContent,
-                        content: Some("pub fn hello() -> String { \"hello initial\".to_string() } // This will fail verification".to_string()),
-                    }];
-                }
+            *codegen_attempt += 1;
+
+            if prompt.contains("Previous Attempt Feedback") || *codegen_attempt > 1 {
+                explanation =
+                    "Fixed the previous build error by adding a missing import.".to_string();
+                changes = vec![CodeChange {
+                    file_path: "src/lib.rs".to_string(),
+                    action: CodeChangeAction::ReplaceContent,
+                    content: Some("use std::collections::HashMap;\n\npub fn hello() -> String { \"hello fixed\".to_string() }".to_string()),
+                }];
+            } else {
+                explanation =
+                    "Initial attempt to refactor. Added a hello function.".to_string();
+                changes = vec![CodeChange {
+                    file_path: "src/lib.rs".to_string(),
+                    action: CodeChangeAction::ReplaceContent,
+                    content: Some("pub fn hello() -> String { \"hello initial\".to_string() } // This will fail verification".to_string()),
+                }];
             }
 
             let tests = if !prompt.contains("Test generation is disabled") {
@@ -879,11 +806,15 @@ fn call_gemini_api_mock(
             } else {
                 None
             };
+
+            std::thread::sleep(std::time::Duration::from_secs(5));
+
             let response = GeminiCodeGenerationResponse {
                 changes,
                 tests,
                 explanation,
             };
+
             Ok(serde_json::to_string_pretty(&response)?)
         }
         _ => Err(format!(
@@ -917,7 +848,7 @@ fn query_rust_analyzer_for_item_definition(
     item_qname_or_path: &str,
 ) -> Result<Option<String>> {
     println!(
-        "GEM: Querying for item using fast parser: {}",
+        "gem: Querying for item: {}",
         item_qname_or_path
     );
 
@@ -969,10 +900,9 @@ fn query_rust_analyzer_for_item_definition(
 }
 
 fn apply_code_changes_mock(project_root: &Path, changes: &[CodeChange]) -> Result<()> {
-    println!("--- MOCK APPLYING CODE CHANGES ---");
     for change in changes {
         let target_path = project_root.join(&change.file_path);
-        println!("Action: {:?} on file: {:?}", change.action, target_path);
+        println!("gem: {:?} on file: {:?}", change.action, target_path);
         match change.action {
             CodeChangeAction::CreateFile | CodeChangeAction::ReplaceContent => {
                 if let Some(content) = &change.content {
@@ -981,7 +911,6 @@ fn apply_code_changes_mock(project_root: &Path, changes: &[CodeChange]) -> Resul
                     }
                     let mut file = fs::File::create(&target_path)?;
                     file.write_all(content.as_bytes())?;
-                    println!("  Applied: Wrote content to {:?}", target_path);
                 } else {
                     eprintln!(
                         "  WARN: No content for CreateFile/ReplaceContent: {:?}",
@@ -992,7 +921,6 @@ fn apply_code_changes_mock(project_root: &Path, changes: &[CodeChange]) -> Resul
             CodeChangeAction::DeleteFile => {
                 if target_path.exists() {
                     fs::remove_file(&target_path)?;
-                    println!("  Applied: Deleted file {:?}", target_path);
                 } else {
                     eprintln!("  WARN: File to delete not found: {:?}", target_path);
                 }
@@ -1009,11 +937,10 @@ fn apply_code_changes_mock(project_root: &Path, changes: &[CodeChange]) -> Resul
 }
 
 fn apply_tests_mock(project_root: &Path, tests: &[TestChange]) -> Result<()> {
-    println!("--- MOCK APPLYING TESTS ---");
     for test in tests {
         let target_path = project_root.join(&test.file_path);
         println!(
-            "Action: {} on file: {:?}, Test: {:?}",
+            "gem: {} on file: {:?}, Test: {:?}",
             test.action,
             target_path,
             test.test_name.as_deref().unwrap_or("N/A")
@@ -1028,7 +955,6 @@ fn apply_tests_mock(project_root: &Path, tests: &[TestChange]) -> Result<()> {
                     .create(true)
                     .open(&target_path)?;
                 file.write_all(test.content.as_bytes())?;
-                println!("  Applied: Appended test to {:?}", target_path);
             }
             "create_file" => {
                 if let Some(parent) = target_path.parent() {
@@ -1036,7 +962,6 @@ fn apply_tests_mock(project_root: &Path, tests: &[TestChange]) -> Result<()> {
                 }
                 let mut file = fs::File::create(&target_path)?;
                 file.write_all(test.content.as_bytes())?;
-                println!("  Applied: Created test file {:?}", target_path);
             }
             _ => {
                 println!(
@@ -1050,10 +975,9 @@ fn apply_tests_mock(project_root: &Path, tests: &[TestChange]) -> Result<()> {
 }
 
 fn git_commit_mock(project_root: &Path, message: &str, amend: bool) -> Result<()> {
-    println!("--- MOCK GIT COMMIT ---");
-    println!("Project Root: {:?}", project_root);
-    println!("Message: {}", message);
-    println!("Amend: {}", amend);
+    println!("\ngem: Phase 5: git commit");
+    let amend = if amend { "--amend " } else { "" };
+    println!("gem: git commit {amend}--message \"{message}\"");
     Ok(())
 }
 
@@ -1062,9 +986,7 @@ fn execute_verification_command_mock(
     project_root: &Path,
     command_str: &str,
 ) -> Result<String> {
-    println!("--- MOCK EXECUTING VERIFICATION COMMAND ---");
-    println!("Project Root: {:?}", project_root);
-    println!("Command: {}", command_str);
+    println!("\ngem: Phase 4: Verifying implementation with {command_str}");
     *attempt += 1;
     if *attempt == 1 && command_str.contains("cargo") {
         let err_output = r#"[{"reason": "compiler-message", ..., "success": false}]"#; // Simplified

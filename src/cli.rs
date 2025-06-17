@@ -50,128 +50,133 @@ impl Default for CustomCliArgs {
 
 pub fn parse_cli_args(raw_args: Vec<String>) -> Result<CustomCliArgs, String> {
     let mut cli_args = CustomCliArgs::default();
-    let mut args_iter = raw_args.iter().skip(1).peekable(); // Skip program name
+    let args: Vec<String> = raw_args.into_iter().skip(1).collect(); // Skip program name
 
-    let mut request_parts: Vec<String> = Vec::new();
-    let mut parsing_options_phase = true; // True while we are expecting options or the first request part
-
-    // Handle empty arguments or "help" as the very first argument
-    if args_iter.peek().is_none() {
+    if args.is_empty() {
         cli_args.show_help = true;
         return Ok(cli_args);
     }
 
-    if let Some(first_arg_str) = args_iter.peek().map(|s| s.as_str()) {
-        if first_arg_str == "help" || first_arg_str == "--help" {
-            cli_args.show_help = true;
-            // Consume the help argument
-            args_iter.next();
-            // If "help" is the first argument, other arguments might be present but are ignored as per test_parse_help_with_other_args
-            return Ok(cli_args);
-        }
+    if args.len() == 1 && (args[0] == "help" || args[0] == "--help") {
+        cli_args.show_help = true;
+        return Ok(cli_args);
     }
 
-    // Main parsing loop
-    while let Some(arg_raw) = args_iter.next() {
-        let arg = arg_raw.clone(); // Clone to satisfy borrow checker for args_iter.next() in match arms
+    // If "help" or "--help" is present anywhere, show help and ignore other args/options.
+    // This simplifies things and matches common CLI behavior.
+    if args.iter().any(|arg| arg == "help" || arg == "--help") {
+        cli_args.show_help = true;
+        return Ok(cli_args);
+    }
 
-        if parsing_options_phase && arg.starts_with("--") {
-            match arg.as_str() {
-                "--verify-with" => {
-                    cli_args.verify_with = args_iter
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| "Missing value for --verify-with".to_string())?;
+    let mut request_parts: Vec<String> = Vec::new();
+    let mut consumed_indices: Vec<usize> = Vec::new(); // To keep track of indices of consumed args
+
+    // Pass 1: Parse options and debug modes
+    let mut i = 0;
+    while i < args.len() {
+        if consumed_indices.contains(&i) {
+            i += 1;
+            continue;
+        }
+
+        let arg = &args[i];
+        let mut consumed_current_arg = false;
+
+        match arg.as_str() {
+            "--verify-with" => {
+                if i + 1 < args.len() {
+                    cli_args.verify_with = args[i + 1].clone();
+                    consumed_indices.push(i);
+                    consumed_indices.push(i + 1);
+                    i += 2; // Consumed option and its value
+                    consumed_current_arg = true;
+                } else {
+                    return Err("Missing value for --verify-with".to_string());
                 }
-                "--no-test" => {
-                    cli_args.no_test = true;
+            }
+            "--no-test" => {
+                cli_args.no_test = true;
+                consumed_indices.push(i);
+                i += 1;
+                consumed_current_arg = true;
+            }
+            "--project-root" => {
+                if i + 1 < args.len() {
+                    cli_args.project_root = PathBuf::from(args[i + 1].clone());
+                    consumed_indices.push(i);
+                    consumed_indices.push(i + 1);
+                    i += 2;
+                    consumed_current_arg = true;
+                } else {
+                    return Err("Missing value for --project-root".to_string());
                 }
-                "--project-root" => {
-                    cli_args.project_root = PathBuf::from(
-                        args_iter
-                            .next()
-                            .cloned()
-                            .ok_or_else(|| "Missing value for --project-root".to_string())?,
-                    );
-                }
-                "--max-data-loops" => {
-                    let val_str = args_iter
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| "Missing value for --max-data-loops".to_string())?;
-                    cli_args.max_data_loops = val_str
+            }
+            "--max-data-loops" => {
+                if i + 1 < args.len() {
+                    cli_args.max_data_loops = args[i + 1]
                         .parse()
                         .map_err(|e| format!("Invalid value for --max-data-loops: {}", e))?;
+                    consumed_indices.push(i);
+                    consumed_indices.push(i + 1);
+                    i += 2;
+                    consumed_current_arg = true;
+                } else {
+                    return Err("Missing value for --max-data-loops".to_string());
                 }
-                "--max-verify-retries" => {
-                    let val_str = args_iter
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| "Missing value for --max-verify-retries".to_string())?;
-                    cli_args.max_verify_retries = val_str
+            }
+            "--max-verify-retries" => {
+                if i + 1 < args.len() {
+                    cli_args.max_verify_retries = args[i + 1]
                         .parse()
                         .map_err(|e| format!("Invalid value for --max-verify-retries: {}", e))?;
-                }
-                "--help" => {
-                    cli_args.show_help = true;
-                    return Ok(cli_args); // --help option also triggers help and exits
-                }
-                _ => {
-                    // Unknown option starting with "--", treat as part of the request.
-                    request_parts.push(arg);
-                    parsing_options_phase = false; // Switch to request parsing mode
-                }
-            }
-        } else {
-            // This is not an option starting with "--", or we are already past the options phase.
-            if parsing_options_phase {
-                // This is the first non-option argument encountered.
-                parsing_options_phase = false; // Subsequent args are definitely part of the request.
-
-                // Check if this first request part is a debug mode specifier.
-                // This check only happens if debug_mode hasn't been set by a (hypothetical future) --debug option.
-                if cli_args.debug_mode.is_none() {
-                    if arg == "debug:initial" {
-                        cli_args.debug_mode = Some(DebugMode::Initial);
-                        // Do not add "debug:initial" to request_parts
-                    } else if arg == "debug:sufficient" {
-                        cli_args.debug_mode = Some(DebugMode::Sufficient);
-                        // Do not add "debug:sufficient" to request_parts
-                    } else if arg == "debug:changes" {
-                        cli_args.debug_mode = Some(DebugMode::Changes);
-                        // Do not add "debug:changes" to request_parts
-                    } else {
-                        // Not a recognized debug mode string (e.g., "debug:", "debug:foo", or regular request word).
-                        // It's part of the user request.
-                        request_parts.push(arg);
-                    }
+                    consumed_indices.push(i);
+                    consumed_indices.push(i + 1);
+                    i += 2;
+                    consumed_current_arg = true;
                 } else {
-                    // Debug mode was already set (e.g., by a hypothetical future "--debug initial" option),
-                    // so this 'arg' must be a request part.
-                    request_parts.push(arg);
+                    return Err("Missing value for --max-verify-retries".to_string());
                 }
-            } else {
-                // We are already in the request part collection phase.
-                request_parts.push(arg);
             }
+            // Debug mode specifiers
+            "debug:initial" => {
+                cli_args.debug_mode = Some(DebugMode::Initial);
+                consumed_indices.push(i);
+                i += 1;
+                consumed_current_arg = true;
+            }
+            "debug:sufficient" => {
+                cli_args.debug_mode = Some(DebugMode::Sufficient);
+                consumed_indices.push(i);
+                i += 1;
+                consumed_current_arg = true;
+            }
+            "debug:changes" => {
+                cli_args.debug_mode = Some(DebugMode::Changes);
+                consumed_indices.push(i);
+                i += 1;
+                consumed_current_arg = true;
+            }
+            _ => {
+                // If it's not a recognized option or debug specifier, leave it for Pass 2 (request parts)
+                // Only increment i if we didn't consume anything in this match arm.
+            }
+        }
+        if !consumed_current_arg {
+            i+=1;
         }
     }
 
+    // Pass 2: Collect request parts from unconsumed arguments
+    for (idx, arg_part) in args.iter().enumerate() {
+        if !consumed_indices.contains(&idx) {
+            request_parts.push(arg_part.clone());
+        }
+    }
     cli_args.user_request = request_parts.join(" ");
 
-    // If show_help is set (e.g. by "gem help" or "gem --help"), user_request can be empty.
-    // Otherwise, if no user request is provided (and not a debug-only command without request), it's an error.
-    if !cli_args.show_help && cli_args.user_request.is_empty() {
-        // Check if it's a debug mode command that might not need a user_request
-        if cli_args.debug_mode.is_none() {
-            // If not in debug mode, request is mandatory
-            return Err(
-                "User request is missing. Use 'gem help' for usage information.".to_string(),
-            );
-        }
-        // If in debug mode, an empty request might be permissible for some debug stages
-        // (e.g., just to print a prompt without further context).
-        // The current tests imply "gem debug:initial" without a request is fine.
+    if !cli_args.show_help && cli_args.user_request.is_empty() && cli_args.debug_mode.is_none() {
+        return Err("User request is missing. Use 'gem help' for usage information.".to_string());
     }
 
     Ok(cli_args)
@@ -415,5 +420,144 @@ mod tests {
         let args =
             parse_cli_args(str_vec(&["do", "this", "--then-this-option-like-thing"])).unwrap();
         assert_eq!(args.user_request, "do this --then-this-option-like-thing");
+    }
+
+    #[test]
+    fn test_all_options_used_together() {
+        let args = parse_cli_args(str_vec(&[
+            "--project-root",
+            "/tmp/xyz",
+            "--verify-with",
+            "make check",
+            "my",
+            "request",
+            "is this",
+            "--no-test",
+            "--max-data-loops",
+            "10",
+            "--max-verify-retries",
+            "5",
+        ]))
+        .unwrap();
+        assert_eq!(args.user_request, "my request is this");
+        assert_eq!(args.project_root, PathBuf::from("/tmp/xyz"));
+        assert_eq!(args.verify_with, "make check");
+        assert!(args.no_test);
+        assert_eq!(args.max_data_loops, 10);
+        assert_eq!(args.max_verify_retries, 5);
+        assert_eq!(args.debug_mode, None);
+    }
+
+    #[test]
+    fn test_options_after_request() {
+        // Current parser treats options after request parts as part of the request.
+        // The new parser should correctly identify them as options.
+        let args = parse_cli_args(str_vec(&[
+            "my",
+            "request",
+            "--no-test",
+            "--verify-with",
+            "specific_command",
+        ]))
+        .unwrap();
+        assert_eq!(args.user_request, "my request");
+        assert!(args.no_test);
+        assert_eq!(args.verify_with, "specific_command");
+    }
+
+    #[test]
+    fn test_debug_mode_with_options_after_request() {
+        let args = parse_cli_args(str_vec(&[
+            "debug:changes",
+            "my",
+            "debug",
+            "request",
+            "--no-test",
+            "--max-data-loops",
+            "1",
+        ]))
+        .unwrap();
+        assert_eq!(args.debug_mode, Some(DebugMode::Changes));
+        assert_eq!(args.user_request, "my debug request");
+        assert!(args.no_test);
+        assert_eq!(args.max_data_loops, 1);
+    }
+
+    #[test]
+    fn test_empty_value_for_option_requiring_value() {
+        // --verify-with ""
+         // The error is not about emptiness but about it being a valid command.
+         // An empty string as a command might be valid on some systems or a way to skip.
+         // The parser should accept it. If it's an issue, it's for the execution part.
+         // Let's re-evaluate this. The parser *should* accept an empty string.
+         // The previous error was "Missing value". Providing "" is not missing.
+        let args_verify_empty = parse_cli_args(str_vec(&["request", "--verify-with", ""])).unwrap();
+        assert_eq!(args_verify_empty.verify_with, "");
+
+
+        // --project-root ""
+        let args_proj_empty = parse_cli_args(str_vec(&["request", "--project-root", ""])).unwrap();
+        assert_eq!(args_proj_empty.project_root, PathBuf::from(""));
+    }
+
+    #[test]
+    fn test_numeric_option_bounds() {
+        // Zero for loops/retries
+        let args_zero = parse_cli_args(str_vec(&[
+            "req",
+            "--max-data-loops",
+            "0",
+            "--max-verify-retries",
+            "0",
+        ]))
+        .unwrap();
+        assert_eq!(args_zero.max_data_loops, 0);
+        assert_eq!(args_zero.max_verify_retries, 0);
+
+        // Large values (should parse, actual clamping/validation is elsewhere if needed)
+        let args_large = parse_cli_args(str_vec(&[
+            "req",
+            "--max-data-loops",
+            "1000",
+        ]))
+        .unwrap();
+        assert_eq!(args_large.max_data_loops, 1000);
+    }
+
+    #[test]
+    fn test_help_anywhere() {
+        let args1 = parse_cli_args(str_vec(&["my", "request", "--help", "--no-test"])).unwrap();
+        assert!(args1.show_help);
+
+        let args2 = parse_cli_args(str_vec(&["--no-test", "help", "my", "request"])).unwrap();
+        assert!(args2.show_help);
+    }
+     #[test]
+    fn test_empty_request_with_options_is_error() {
+        let err = parse_cli_args(str_vec(&["--no-test", "--max-data-loops", "1"])).unwrap_err();
+        assert!(err.contains("User request is missing"));
+    }
+
+    #[test]
+    fn test_debug_specifier_anywhere() {
+        // Before options
+        let args1 = parse_cli_args(str_vec(&["debug:initial", "--no-test", "req"])).unwrap();
+        assert_eq!(args1.debug_mode, Some(DebugMode::Initial));
+        assert!(args1.no_test);
+        assert_eq!(args1.user_request, "req");
+
+        // After options
+        let args2 = parse_cli_args(str_vec(&["--no-test", "debug:sufficient", "req2"])).unwrap();
+        assert_eq!(args2.debug_mode, Some(DebugMode::Sufficient));
+        assert!(args2.no_test);
+        assert_eq!(args2.user_request, "req2");
+
+        // In the middle of request parts (becomes part of request if not first unconsumed item for debug)
+        // The current two-pass logic: debug:stage is consumed in pass 1.
+        // So, "req1 debug:changes req2" -> debug_mode=Changes, request="req1 req2"
+        let args3 = parse_cli_args(str_vec(&["req1", "debug:changes", "req2", "--no-test"])).unwrap();
+        assert_eq!(args3.debug_mode, Some(DebugMode::Changes));
+        assert!(args3.no_test);
+        assert_eq!(args3.user_request, "req1 req2");
     }
 }

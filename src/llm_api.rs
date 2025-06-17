@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::Duration; // Required for reqwest timeout
 
 // Type alias for Results that might be errors from this module

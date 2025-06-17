@@ -4,12 +4,12 @@ pub mod cache;
 pub mod cli;
 pub mod parser;
 pub mod locatesource;
+pub mod browser_interaction;
+pub mod gemma;
 
 // Standard library imports needed by moved functions
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::fs;
-use std::env;
 use std::process::Command;
 use std::time::Duration; // For ProgressBar and potentially for reqwest timeout if not already in llm_api
 

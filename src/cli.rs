@@ -70,16 +70,11 @@ pub fn parse_cli_args(raw_args: Vec<String>) -> Result<CustomCliArgs, String> {
     }
 
     let mut request_parts: Vec<String> = Vec::new();
-    let mut consumed_indices: Vec<usize> = Vec::new(); // To keep track of indices of consumed args
+    let mut request_parts: Vec<String> = Vec::new();
 
-    // Pass 1: Parse options and debug modes
+    // Single pass: Parse options, debug modes, and collect unrecognized arguments
     let mut i = 0;
     while i < args.len() {
-        if consumed_indices.contains(&i) {
-            i += 1;
-            continue;
-        }
-
         let arg = &args[i];
         let mut consumed_current_arg = false;
 

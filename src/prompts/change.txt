@@ -18,9 +18,9 @@ Your response MUST be a single JSON object with the following structure:
 {{
   "changes": [
     {{
-      "file_path": "src/path/to/file.rs",
-      "action": "ReplaceContent", // or "CreateFile", "DeleteFile" (More granular actions like ApplyDiff, ReplaceLines are harder to implement client-side, prefer ReplaceContent if unsure)
-      "content": "..." // Full new content for 'ReplaceContent' or 'CreateFile'. Null for 'DeleteFile'.
+      "file_path": "src/path/to/file.rs", // Or "MARKDOWN_CHANGES" for ProcessMarkdownAndApplyChanges
+      "action": "ReplaceContent", // or "CreateFile", "DeleteFile", "ReplaceItemInSection", "ProcessMarkdownAndApplyChanges"
+      "content": "..." // Full new content for 'ReplaceContent', 'CreateFile', the specific item in 'ReplaceItemInSection', or the full Markdown text for "ProcessMarkdownAndApplyChanges". Null for 'DeleteFile'.
     }}
   ],
   "tests": [ // Only include if tests are requested. Omit or empty array if not.
@@ -33,4 +33,31 @@ Your response MUST be a single JSON object with the following structure:
   ],
   "explanation": "A brief summary of the changes made and why."
 }}
-Ensure the 'content' for code is properly escaped for JSON. For "ReplaceContent", provide the ENTIRE new file content.
+Ensure the 'content' for code is properly escaped for JSON.
+
+Specific instructions for "action" types:
+- "ReplaceContent": Use this to replace the ENTIRE content of a file.
+    - "file_path": Should be the simple path to the file (e.g., "src/my_module.rs").
+    - "content": Should be the full new content for the file.
+- "CreateFile": Use this to create a new file.
+    - "file_path": Should be the path to the new file.
+    - "content": Should be the full content for the new file.
+- "DeleteFile": Use this to delete a file.
+    - "file_path": Should be the path to the file to be deleted.
+    - "content": Should be null.
+- "ReplaceItemInSection": Use this to replace a specific Rust item (function, struct, enum, const) within a file.
+    - "file_path": Should be the path to the file, followed by "::" and the item name (e.g., "src/my_module.rs::MyStruct" or "src/my_functions.rs::my_function").
+    - "content": Should be the full new code for that specific item.
+- "ProcessMarkdownAndApplyChanges": Use this to provide a batch of changes affecting multiple files or complex modifications within a single Markdown document.
+    - "file_path": Should be a conventional string, e.g., "MARKDOWN_CHANGES".
+    - "content": Should be the entire Markdown text. The Markdown should contain segments like:
+      File: path/to/your_file.rs
+      ```rust
+      // full content of the rust code block for this file
+      // or the new content for an item if combined with a conceptual item replacement
+      ```
+      (Supported filename lines before a code block are typically `File: path/to/your_file.rs` or just `path/to/your_file.rs` on a line by itself.)
+      Each Rust code block found this way will be processed.
+      Note: If a Rust code block in the Markdown defines a single, valid Rust item (like a function, struct, or enum), and an item with the same name already exists in the target file, the system will attempt to replace just that specific item. Otherwise, the entire content of the target file will be replaced with the code block, or a new file will be created.
+
+(More granular actions like ApplyDiff, ReplaceLines are harder to implement client-side, prefer ReplaceContent, ReplaceItemInSection, or ProcessMarkdownAndApplyChanges if unsure about the scope of change).

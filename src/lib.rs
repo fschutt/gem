@@ -9,8 +9,10 @@ pub mod gemma;
 
 // Standard library imports needed by moved functions
 use std::collections::HashMap;
+use std::fs; // Added for file operations
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use syn; // Added for parsing Rust code content
 use std::time::Duration; // For ProgressBar and potentially for reqwest timeout if not already in llm_api
 
 // Crate-local imports (modules defined above)
@@ -270,7 +272,13 @@ pub fn run_gem_agent(
             pb.as_ref().unwrap().set_message("Applying code changes...");
             pb.as_ref().unwrap().enable_steady_tick(Duration::from_millis(100));
         }
-        apply_code_changes_mock(&project_root, &code_gen_response.changes)?;
+        // Call the real apply_code_changes function
+        apply_code_changes(&project_root, &code_gen_response.changes)
+            .map_err(|e| {
+                eprintln!("gem: ERROR: Failed to apply code changes: {}", e);
+                // Optionally, provide more context or attempt rollback if applicable
+                e
+            })?;
         if let Some(p) = &pb { p.finish_with_message("Code changes applied."); pb = None; }
 
         if !args.no_test {
@@ -473,15 +481,161 @@ fn query_rust_analyzer_for_item_definition(project_root: &Path, item_qname_or_pa
     }
 }
 
-// Mock implementations (kept in lib.rs for now, might move to tests or test utils later)
-fn apply_code_changes_mock(_project_root: &Path, changes: &[CodeChange]) -> Result<()> {
+// --- Real Code Change Application ---
+pub fn apply_code_changes(project_root: &Path, changes: &[CodeChange]) -> Result<()> {
     for change in changes {
-        // In a real scenario, you'd print or log these changes.
-        // For testing, this function might interact with a mock filesystem or check calls.
-        // println!("MOCK: Applying change: {:?}", change);
+        let full_path = project_root.join(&change.file_path);
+        match change.action {
+            CodeChangeAction::CreateFile => {
+                if let Some(parent_dir) = full_path.parent() {
+                    fs::create_dir_all(parent_dir)
+                        .map_err(|e| format!("Failed to create parent directories for {:?}: {}", full_path, e))?;
+                }
+                fs::write(&full_path, change.content.as_deref().unwrap_or(""))
+                    .map_err(|e| format!("Failed to create file {:?}: {}", full_path, e))?;
+                if !atty::is(atty::Stream::Stdout) { println!("gem: Created file: {:?}", full_path); }
+
+            }
+            CodeChangeAction::DeleteFile => {
+                fs::remove_file(&full_path)
+                    .map_err(|e| format!("Failed to delete file {:?}: {}", full_path, e))?;
+                if !atty::is(atty::Stream::Stdout) { println!("gem: Deleted file: {:?}", full_path); }
+            }
+            CodeChangeAction::ReplaceContent => {
+                fs::write(&full_path, change.content.as_deref().unwrap_or(""))
+                    .map_err(|e| format!("Failed to replace content of file {:?}: {}", full_path, e))?;
+                 if !atty::is(atty::Stream::Stdout) { println!("gem: Replaced content of file: {:?}", full_path); }
+            }
+            CodeChangeAction::ReplaceItemInSection => {
+                // file_path is "path/to/file.rs::ItemName"
+                let parts: Vec<&str> = change.file_path.splitn(2, "::").collect();
+                if parts.len() != 2 {
+                    return Err(format!("Invalid file_path for ReplaceItemInSection: {}. Expected format 'path/to/file.rs::ItemName'", change.file_path).into());
+                }
+                let actual_file_path_str = parts[0];
+                let item_name_suffix = parts[1];
+                let actual_file_path = project_root.join(actual_file_path_str);
+
+                let file_content = fs::read_to_string(&actual_file_path)
+                    .map_err(|e| format!("Failed to read file {:?} for item replacement: {}", actual_file_path, e))?;
+
+                match parser::find_item_span(&file_content, item_name_suffix, &actual_file_path, project_root) {
+                    Ok(Some((start_byte, end_byte))) => {
+                        let new_content = format!("{}{}{}",
+                            &file_content[..start_byte],
+                            change.content.as_deref().unwrap_or(""),
+                            &file_content[end_byte..]
+                        );
+                        fs::write(&actual_file_path, new_content)
+                            .map_err(|e| format!("Failed to write updated content to {:?}: {}", actual_file_path, e))?;
+                        if !atty::is(atty::Stream::Stdout) { println!("gem: Replaced item '{}' in file: {:?}", item_name_suffix, actual_file_path); }
+                    }
+                    Ok(None) => {
+                        return Err(format!("Failed to find item '{}' in '{}'", item_name_suffix, actual_file_path_str).into());
+                    }
+                    Err(e) => {
+                        return Err(format!("Error finding item span for '{}' in '{}': {}", item_name_suffix, actual_file_path_str, e).into());
+                    }
+                }
+            }
+            CodeChangeAction::ProcessMarkdownAndApplyChanges => {
+                let markdown_content = change.content.as_deref().unwrap_or_default();
+                if change.file_path != "MARKDOWN_CHANGES" && !atty::is(atty::Stream::Stdout) {
+                     println!("gem: WARNING: file_path for ProcessMarkdownAndApplyChanges was '{}', expected 'MARKDOWN_CHANGES'. Processing normally.", change.file_path);
+                }
+
+                let extracted_blocks = parser::extract_file_code_blocks_from_markdown(markdown_content)
+                    .map_err(|e| format!("Failed to parse markdown for code blocks: {}", e))?;
+
+                if extracted_blocks.is_empty() && !atty::is(atty::Stream::Stdout) {
+                    println!("gem: WARNING: No file code blocks found in the provided Markdown for ProcessMarkdownAndApplyChanges.");
+                }
+
+                for (file_path_str, code_content) in extracted_blocks {
+                    let target_file_path = project_root.join(&file_path_str);
+                    let mut item_replaced_in_file = false;
+
+                    // Attempt to parse code_content as a single Rust item
+                    match syn::parse_str::<syn::Item>(&code_content) {
+                        Ok(syn_item) => {
+                            let item_name_from_markdown_block = match &syn_item {
+                                syn::Item::Const(item) => Some(item.ident.to_string()),
+                                syn::Item::Enum(item) => Some(item.ident.to_string()),
+                                syn::Item::Fn(item) => Some(item.sig.ident.to_string()),
+                                syn::Item::Macro(item) => item.ident.as_ref().map(|id| id.to_string()),
+                                syn::Item::Mod(item) => Some(item.ident.to_string()),
+                                syn::Item::Static(item) => Some(item.ident.to_string()),
+                                syn::Item::Struct(item) => Some(item.ident.to_string()),
+                                syn::Item::Trait(item) => Some(item.ident.to_string()),
+                                syn::Item::TraitAlias(item) => Some(item.ident.to_string()),
+                                syn::Item::Type(item) => Some(item.ident.to_string()),
+                                syn::Item::Union(item) => Some(item.ident.to_string()),
+                                // syn::Item::ExternCrate, syn::Item::ForeignMod, syn::Item::Impl, syn::Item::Use, syn::Item::Verbatim
+                                _ => None, // Not all items have a clear single 'ident' or are suitable for this logic
+                            };
+
+                            if let Some(name) = item_name_from_markdown_block {
+                                if target_file_path.exists() {
+                                    let target_file_content_str = fs::read_to_string(&target_file_path)
+                                        .map_err(|e| format!("Failed to read target file {:?} for item replacement: {}", target_file_path, e))?;
+
+                                    match parser::find_item_span(&target_file_content_str, &name, &target_file_path, project_root) {
+                                        Ok(Some((start_byte, end_byte))) => {
+                                            let new_target_content = format!("{}{}{}",
+                                                &target_file_content_str[..start_byte],
+                                                &code_content, // Use the full code_content from markdown here
+                                                &target_file_content_str[end_byte..]
+                                            );
+                                            fs::write(&target_file_path, new_target_content)
+                                                .map_err(|e| format!("Failed to write updated content to {:?} after item replacement: {}", target_file_path, e))?;
+                                            if !atty::is(atty::Stream::Stdout) {
+                                                println!("gem: Applied item replacement for '{}' in '{:?}' from Markdown.", name, target_file_path);
+                                            }
+                                            item_replaced_in_file = true;
+                                        }
+                                        Ok(None) => { // Item not found in existing file, fall through to whole file write/create
+                                            if !atty::is(atty::Stream::Stdout) {
+                                                println!("gem: Item '{}' not found in {:?} for in-place replacement. Proceeding with whole file operation.", name, target_file_path);
+                                            }
+                                        }
+                                        Err(e) => { // Error finding span, fall through but log
+                                            if !atty::is(atty::Stream::Stdout) {
+                                                eprintln!("gem: Error finding item span for '{}' in '{:?}': {}. Proceeding with whole file operation.", name, target_file_path, e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => { // Not a single parsable item, treat as whole file content.
+                            // Optional: log that parsing code_content as single item failed.
+                        }
+                    }
+
+                    if !item_replaced_in_file {
+                        // Fallback: Whole file operation (create or replace)
+                        if let Some(parent_dir) = target_file_path.parent() {
+                            fs::create_dir_all(parent_dir)
+                                .map_err(|e| format!("Failed to create parent directories for extracted file {:?}: {}", target_file_path, e))?;
+                        }
+                        fs::write(&target_file_path, &code_content) // Ensure code_content is borrowed here
+                            .map_err(|e| format!("Failed to write extracted content to file {:?}: {}", target_file_path, e))?;
+                        if !atty::is(atty::Stream::Stdout) {
+                            println!("gem: Applied (whole file create/replace) from Markdown to file: {:?}", target_file_path);
+                        }
+                    }
+                }
+            }
+            // Fallback for other actions
+            _ => {
+                return Err(format!("CodeChangeAction {:?} not yet implemented.", change.action).into());
+            }
+        }
     }
     Ok(())
 }
+
+// Mock implementations (kept in lib.rs for now, might move to tests or test utils later)
 
 fn apply_tests_mock(_project_root: &Path, tests: &[TestChange]) -> Result<()> {
     for test in tests {

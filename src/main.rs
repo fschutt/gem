@@ -6,6 +6,8 @@ use std::process; // For process::exit
 use gem::cli::{self, CustomCliArgs}; // cli module from lib
 use gem::cache::Session;             // cache module from lib
 use gem::llm_api::{LLMApi, RealLLMApi}; // llm_api module from lib
+use gem::browser_interaction;         // Added for browser interaction
+use gem::gemma;                       // Added for local Gemma interaction
 use gem::run_gem_agent;               // The main logic function
 
 // Type alias for Result, specific to main, or use gem::Result
@@ -73,10 +75,59 @@ fn main() -> Result<()> {
 
     let llm_api_instance: Box<dyn LLMApi> = Box::new(RealLLMApi::new(gemini_api_key));
 
-    // Call the main agent logic, now in the library
-    if let Err(e) = run_gem_agent(args, &mut session, llm_api_instance, is_interactive, project_root) {
-        eprintln!("gem: Critical error during agent execution: {}", e);
-        process::exit(1);
+    // Prioritize local model execution if --local is specified
+    if args.local_model {
+        println!("gem: Local model mode activated.");
+        let prompt = if args.user_request.is_empty() {
+            // Provide a default prompt or handle empty request for local model as needed
+            "Default prompt for local Gemma: Please provide a summary of your capabilities.".to_string()
+        } else {
+            format!("Processing with local Gemma: {}", args.user_request)
+        };
+
+        match gemma::run_local_gemma(&prompt) {
+            Ok(response) => {
+                println!("gem: Local Gemma response:\n{}", response);
+                process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("gem: Error during local Gemma execution: {}", e);
+                process::exit(1);
+            }
+        }
+    }
+    // Check if browser mode is activated (only if local_model is false)
+    else if let Some(url) = &args.browser_url {
+        println!("gem: Browser mode activated for URL: {}", url);
+        let gemini_request_placeholder = "This is a test Gemini request for the browser."; // Placeholder
+
+        match browser_interaction::handle_browser_request(
+            url,
+            args.input_selector.as_deref(),
+            args.codeblock_selector.as_deref(),
+            args.finished_selector.as_deref(),
+            gemini_request_placeholder,
+        ) {
+            Ok(code_blocks) => {
+                println!("gem: Successfully retrieved code from browser:");
+                for (i, block) in code_blocks.iter().enumerate() {
+                    println!("--- Code Block {} ---", i + 1);
+                    println!("{}", block);
+                    println!("--- End Code Block {} ---", i + 1);
+                }
+                process::exit(0); // Successfully exit after browser interaction
+            }
+            Err(e) => {
+                eprintln!("gem: Error during browser interaction: {}", e);
+                process::exit(1); // Exit with error after browser interaction failure
+            }
+        }
+    } else {
+        // Call the main agent logic, now in the library
+        if let Err(e) = run_gem_agent(args, &mut session, llm_api_instance, is_interactive, project_root) {
+            eprintln!("gem: Critical error during agent execution: {}", e);
+            process::exit(1);
+        }
     }
 
     Ok(())

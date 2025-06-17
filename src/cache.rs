@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Session manages both caching and persistent state across requests
 pub struct Session {
@@ -185,9 +185,9 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::{self, File};
-    use std::io::Write;
+    use std::fs;
     use tempfile::{tempdir, TempDir};
+    use serial_test::serial;
 
     fn setup_session(session_id: &str) -> (Session, PathBuf, TempDir) {
         let temp_dir = tempdir().unwrap();
@@ -203,6 +203,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_session_new_loads_cache_from_files() {
         let session_id = "test_load_session";
         let (_session, session_dir, _temp_dir_guard) = setup_session(session_id);
@@ -232,6 +233,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_save_and_get_cached_response() {
         let session_id = "test_save_get_session";
         let (mut session, session_dir, _temp_dir_guard) = setup_session(session_id);
@@ -261,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_cached_response_miss() {
         let session_id = "test_cache_miss_session";
         let (session, _session_dir, _temp_dir_guard) = setup_session(session_id);
@@ -268,6 +271,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_mock_cache_and_prompts() {
         let session_id = "test_mock_load_session";
         let (mut session, _session_dir, _temp_dir_guard) = setup_session(session_id);
@@ -284,6 +288,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_session_new_empty_dir() {
         let session_id = "test_empty_dir_session";
         // _td_guard keeps the temp directory alive for the Session::new call within setup_session
@@ -309,6 +314,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_session_new_ignores_unrelated_files() {
         let session_id = "test_ignore_files_session";
         let (_session, session_dir, _temp_dir_guard) = setup_session(session_id);

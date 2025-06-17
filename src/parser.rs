@@ -330,7 +330,7 @@ impl<'ast> Visit<'ast> for SymbolCollector {
         }
 
         // Add attributes to hover text
-        let mut hover_text = format!("{}\nSignature: {}", doc, signature);
+        let hover_text = format!("{}\nSignature: {}", doc, signature);
 
         self.add_symbol(&i.sig.ident.to_string(), symbol_type, hover_text);
         visit::visit_item_fn(self, i);
@@ -608,7 +608,7 @@ impl SymbolHierarchy {
         let parts: Vec<&str> = path.rsplitn(2, "::").collect();
 
         // Extract name and parent path
-        let (name, parent) = match parts.len() {
+        let (name, _parent) = match parts.len() {
             1 => (parts[0], ""),
             _ => (parts[0], parts[1]),
         };
@@ -616,7 +616,7 @@ impl SymbolHierarchy {
         // For enum variants, extract the parent enum path
         if matches!(symbol_type, SymbolType::Variant) {
             if let Some(enum_path) = extract_parent_enum(path, name) {
-                let doc = extract_doc_comment(doc);
+                // let doc = extract_doc_comment(doc); // Original doc parameter used below for SymbolNode::Leaf
                 self.symbols
                     .entry(format!("ENUMS"))
                     .or_default()
@@ -624,7 +624,7 @@ impl SymbolHierarchy {
                     .or_insert_with(|| SymbolNode::Leaf {
                         name: enum_path.to_string(),
                         symbol_type: SymbolType::Enum,
-                        doc: String::new(),
+                        doc: extract_doc_comment(doc), // Use extracted doc for the enum leaf
                     });
 
                 // Add variant to enum
@@ -637,8 +637,8 @@ impl SymbolHierarchy {
 
         match symbol_type {
             SymbolType::Function => {
-                let signature = extract_function_signature(doc);
-                let doc = extract_doc_comment(doc);
+                let signature = extract_function_signature(doc); // doc is the original hover_text here
+                let extracted_doc = extract_doc_comment(doc); // This is the actual doc part
                 self.symbols
                     .entry(category)
                     .or_default()
@@ -646,17 +646,17 @@ impl SymbolHierarchy {
                     .or_insert_with(|| SymbolNode::Function {
                         name: name.to_string(),
                         signature,
-                        doc,
+                        doc: extracted_doc,
                     });
             }
             SymbolType::Field => {
-                if let Some(struct_path) = extract_parent_struct(path, name) {
-                    let doc = extract_doc_comment(doc);
+                if let Some(_struct_path) = extract_parent_struct(path, name) { // _struct_path unused
+                    let _extracted_doc = extract_doc_comment(doc); // doc is original hover_text, _extracted_doc is unused
                     // Add field to struct
                 }
             }
             _ => {
-                let doc = extract_doc_comment(doc);
+                let extracted_doc = extract_doc_comment(doc); // doc is original hover_text
                 self.symbols
                     .entry(category)
                     .or_default()
@@ -664,7 +664,7 @@ impl SymbolHierarchy {
                     .or_insert_with(|| SymbolNode::Leaf {
                         name: name.to_string(),
                         symbol_type: symbol_type.clone(),
-                        doc,
+                        doc: extracted_doc,
                     });
             }
         }
@@ -708,14 +708,17 @@ impl SymbolHierarchy {
         if let Some(enums) = self.symbols.get_mut("ENUMS") {
             if let Some(enum_node) = enums.get_mut(enum_path) {
                 // Add the variant as a child of the enum
-                if let SymbolNode::Leaf { ref mut doc, .. } = enum_node {
+                if let SymbolNode::Leaf { .. } = enum_node {
                     // If this is the first variant, initialize the enum as a parent
+                    // TODO: This logic for replacing the enum leaf is incomplete and might not correctly
+                    // handle multiple variants or preserve the original enum's documentation properly.
+                    // For now, focusing on using the variant's 'doc'.
                     let mut variants = BTreeMap::new();
                     variants.insert(
                         name.to_string(),
                         SymbolNode::EnumVariant {
                             name: name.to_string(),
-                            doc: doc.to_string(),
+                            doc: doc, // Use the variant's documentation passed as parameter
                         },
                     );
 
@@ -726,7 +729,7 @@ impl SymbolHierarchy {
         }
     }
 
-    fn add_struct_field(&mut self, struct_path: &str, field_path: &str, doc: String) {
+    fn add_struct_field(&mut self, _struct_path: &str, _field_path: &str, _doc: String) {
         // Similar implementation to add_enum_variant
     }
 
@@ -773,12 +776,12 @@ fn extract_parent_path(path: &str) -> Option<String> {
     path.rsplitn(2, "::").nth(1).map(|s| s.to_string())
 }
 
-fn extract_parent_enum(path: &str, variant_name: &str) -> Option<String> {
+fn extract_parent_enum(path: &str, _variant_name: &str) -> Option<String> {
     // Logic to extract parent enum path from a variant path
     path.rsplitn(2, "::").nth(1).map(|s| s.to_string())
 }
 
-fn extract_parent_struct(path: &str, field_name: &str) -> Option<String> {
+fn extract_parent_struct(path: &str, _field_name: &str) -> Option<String> {
     // Logic to extract parent struct path from a field path
     path.rsplitn(2, "::").nth(1).map(|s| s.to_string())
 }

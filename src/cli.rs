@@ -31,6 +31,12 @@ pub struct CustomCliArgs {
     pub max_verify_retries: usize,
     pub debug_mode: Option<DebugMode>,
     pub show_help: bool,
+    // Browser mode options
+    pub browser_url: Option<String>,
+    pub input_selector: Option<String>,
+    pub codeblock_selector: Option<String>,
+    pub finished_selector: Option<String>,
+    pub local_model: bool,
 }
 
 impl Default for CustomCliArgs {
@@ -44,6 +50,11 @@ impl Default for CustomCliArgs {
             max_verify_retries: MAX_VERIFICATION_RETRIES_DEFAULT,
             debug_mode: None,
             show_help: false,
+            browser_url: None,
+            input_selector: None,
+            codeblock_selector: None,
+            finished_selector: None,
+            local_model: false,
         }
     }
 }
@@ -71,6 +82,7 @@ pub fn parse_cli_args(raw_args: Vec<String>) -> Result<CustomCliArgs, String> {
 
     let mut request_parts: Vec<String> = Vec::new();
     let mut consumed_indices: Vec<usize> = Vec::new(); // To keep track of indices of consumed args
+    let mut browser_flag_found = false; // Tracks if --browser flag itself was seen
 
     // Pass 1: Parse options and debug modes
     let mut i = 0;
@@ -84,8 +96,59 @@ pub fn parse_cli_args(raw_args: Vec<String>) -> Result<CustomCliArgs, String> {
         let mut consumed_current_arg = false;
 
         match arg.as_str() {
+            "--local" => {
+                cli_args.local_model = true;
+                consumed_indices.push(i);
+                i += 1;
+                consumed_current_arg = true;
+            }
+            "--browser" => {
+                browser_flag_found = true;
+                if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                    cli_args.browser_url = Some(args[i + 1].clone());
+                    consumed_indices.push(i);
+                    consumed_indices.push(i + 1);
+                    i += 2;
+                    consumed_current_arg = true;
+                } else {
+                    return Err("Missing URL for --browser option".to_string());
+                }
+            }
+            "--input" => {
+                if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                    cli_args.input_selector = Some(args[i + 1].clone());
+                    consumed_indices.push(i);
+                    consumed_indices.push(i + 1);
+                    i += 2;
+                    consumed_current_arg = true;
+                } else {
+                    return Err("Missing selector for --input option".to_string());
+                }
+            }
+            "--codeblock" => {
+                if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                    cli_args.codeblock_selector = Some(args[i + 1].clone());
+                    consumed_indices.push(i);
+                    consumed_indices.push(i + 1);
+                    i += 2;
+                    consumed_current_arg = true;
+                } else {
+                    return Err("Missing selector for --codeblock option".to_string());
+                }
+            }
+            "--finished" => {
+                if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                    cli_args.finished_selector = Some(args[i + 1].clone());
+                    consumed_indices.push(i);
+                    consumed_indices.push(i + 1);
+                    i += 2;
+                    consumed_current_arg = true;
+                } else {
+                    return Err("Missing selector for --finished option".to_string());
+                }
+            }
             "--verify-with" => {
-                if i + 1 < args.len() {
+                if i + 1 < args.len() && !args[i+1].starts_with("--") {
                     cli_args.verify_with = args[i + 1].clone();
                     consumed_indices.push(i);
                     consumed_indices.push(i + 1);
@@ -102,7 +165,7 @@ pub fn parse_cli_args(raw_args: Vec<String>) -> Result<CustomCliArgs, String> {
                 consumed_current_arg = true;
             }
             "--project-root" => {
-                if i + 1 < args.len() {
+                if i + 1 < args.len() && !args[i+1].starts_with("--") {
                     cli_args.project_root = PathBuf::from(args[i + 1].clone());
                     consumed_indices.push(i);
                     consumed_indices.push(i + 1);
@@ -113,7 +176,7 @@ pub fn parse_cli_args(raw_args: Vec<String>) -> Result<CustomCliArgs, String> {
                 }
             }
             "--max-data-loops" => {
-                if i + 1 < args.len() {
+                if i + 1 < args.len() && !args[i+1].starts_with("--") {
                     cli_args.max_data_loops = args[i + 1]
                         .parse()
                         .map_err(|e| format!("Invalid value for --max-data-loops: {}", e))?;
@@ -126,7 +189,7 @@ pub fn parse_cli_args(raw_args: Vec<String>) -> Result<CustomCliArgs, String> {
                 }
             }
             "--max-verify-retries" => {
-                if i + 1 < args.len() {
+                if i + 1 < args.len() && !args[i+1].starts_with("--") {
                     cli_args.max_verify_retries = args[i + 1]
                         .parse()
                         .map_err(|e| format!("Invalid value for --max-verify-retries: {}", e))?;
@@ -175,8 +238,25 @@ pub fn parse_cli_args(raw_args: Vec<String>) -> Result<CustomCliArgs, String> {
     }
     cli_args.user_request = request_parts.join(" ");
 
-    if !cli_args.show_help && cli_args.user_request.is_empty() && cli_args.debug_mode.is_none() {
-        return Err("User request is missing. Use 'gem help' for usage information.".to_string());
+    // Validate browser options first, as they are more specific
+    if !browser_flag_found &&
+       (cli_args.input_selector.is_some() || cli_args.codeblock_selector.is_some() || cli_args.finished_selector.is_some()) {
+        return Err("--input, --codeblock, or --finished options require the --browser option to be specified.".to_string());
+    }
+
+    // If --browser flag was found but URL is None (e.g. "--browser --other-option"), it's an error.
+    // This is already handled by the parsing logic for --browser itself, but double-check.
+    if browser_flag_found && cli_args.browser_url.is_none() {
+         return Err("Missing URL for --browser option".to_string());
+    }
+
+    // General check for missing user request if not showing help and not in browser mode and not local model mode
+    if !cli_args.show_help &&
+       cli_args.user_request.is_empty() &&
+       cli_args.debug_mode.is_none() &&
+       cli_args.browser_url.is_none() &&
+       !cli_args.local_model {
+        return Err("User request, --browser URL, or --local flag is missing. Use 'gem help' for usage information.".to_string());
     }
 
     Ok(cli_args)
@@ -220,6 +300,18 @@ OPTIONS:
     --max-verify-retries <NUMBER>
         Maximum number of verification retries (after the initial attempt)
         [default: {}]
+
+    --browser <URL>
+        URL to open in the browser for web-based tasks.
+    --input <SELECTOR>
+        CSS selector for the input field (requires --browser).
+    --codeblock <SELECTOR>
+        CSS selector for the codeblock to copy from (requires --browser).
+    --finished <SELECTOR>
+        CSS selector to indicate task completion (requires --browser).
+
+    --local
+        Use a local model (e.g., Gemma) instead of the Gemini API.
 
     --help
         Print help information
@@ -328,7 +420,7 @@ mod tests {
 
         // Test case 2: Only options, no request
         let err_opts_only = parse_cli_args(str_vec(&["--no-test"])).unwrap_err();
-        assert!(err_opts_only.contains("User request is missing"));
+        assert!(err_opts_only.contains("User request, --browser URL, or --local flag is missing"));
     }
 
     #[test]
@@ -535,7 +627,8 @@ mod tests {
      #[test]
     fn test_empty_request_with_options_is_error() {
         let err = parse_cli_args(str_vec(&["--no-test", "--max-data-loops", "1"])).unwrap_err();
-        assert!(err.contains("User request is missing"));
+        // Adjusted to new error message
+        assert!(err.contains("User request, --browser URL, or --local flag is missing"));
     }
 
     #[test]
@@ -559,5 +652,200 @@ mod tests {
         assert_eq!(args3.debug_mode, Some(DebugMode::Changes));
         assert!(args3.no_test);
         assert_eq!(args3.user_request, "req1 req2");
+    }
+}
+
+#[cfg(test)]
+mod tests_cli_browser_options {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn str_vec(args: &[&str]) -> Vec<String> {
+        std::iter::once("gem_program_name".to_string())
+            .chain(args.iter().map(|s| s.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn test_parse_browser_with_url() {
+        let args = parse_cli_args(str_vec(&["--browser", "https://example.com"])).unwrap();
+        assert_eq!(args.browser_url, Some("https://example.com".to_string()));
+        assert!(args.user_request.is_empty());
+    }
+
+    #[test]
+    fn test_parse_browser_with_url_and_request() {
+        let args = parse_cli_args(str_vec(&["--browser", "https://example.com", "do", "something", "on", "page"])).unwrap();
+        assert_eq!(args.browser_url, Some("https://example.com".to_string()));
+        assert_eq!(args.user_request, "do something on page");
+    }
+
+    #[test]
+    fn test_parse_browser_with_all_options() {
+        let args = parse_cli_args(str_vec(&[
+            "--browser", "https://example.com",
+            "--input", "#inputField",
+            "--codeblock", ".code > pre",
+            "--finished", "#doneButton",
+            "process data"
+        ])).unwrap();
+        assert_eq!(args.browser_url, Some("https://example.com".to_string()));
+        assert_eq!(args.input_selector, Some("#inputField".to_string()));
+        assert_eq!(args.codeblock_selector, Some(".code > pre".to_string()));
+        assert_eq!(args.finished_selector, Some("#doneButton".to_string()));
+        assert_eq!(args.user_request, "process data");
+    }
+
+    #[test]
+    fn test_parse_browser_with_some_options() {
+        let args = parse_cli_args(str_vec(&[
+            "--browser", "https://example.com",
+            "--input", "textarea.prompt",
+            "submit prompt"
+        ])).unwrap();
+        assert_eq!(args.browser_url, Some("https://example.com".to_string()));
+        assert_eq!(args.input_selector, Some("textarea.prompt".to_string()));
+        assert_eq!(args.codeblock_selector, None);
+        assert_eq!(args.finished_selector, None);
+        assert_eq!(args.user_request, "submit prompt");
+    }
+
+    #[test]
+    fn test_error_browser_without_url() {
+        let err = parse_cli_args(str_vec(&["--browser"])).unwrap_err();
+        assert_eq!(err, "Missing URL for --browser option");
+
+        // This should also fail as --input is an option, not a URL
+        let err2 = parse_cli_args(str_vec(&["--browser", "--input", "#sel"])).unwrap_err();
+        assert_eq!(err2, "Missing URL for --browser option");
+    }
+
+    #[test]
+    fn test_error_input_without_browser() {
+        let err = parse_cli_args(str_vec(&["--input", "#inputField", "some request"])).unwrap_err();
+        assert_eq!(err, "--input, --codeblock, or --finished options require the --browser option to be specified.");
+    }
+
+    #[test]
+    fn test_error_codeblock_without_browser() {
+        let err = parse_cli_args(str_vec(&["--codeblock", ".code", "some request"])).unwrap_err();
+        assert_eq!(err, "--input, --codeblock, or --finished options require the --browser option to be specified.");
+    }
+
+    #[test]
+    fn test_error_finished_without_browser() {
+        let err = parse_cli_args(str_vec(&["--finished", "#done", "some request"])).unwrap_err();
+        assert_eq!(err, "--input, --codeblock, or --finished options require the --browser option to be specified.");
+    }
+
+    #[test]
+    fn test_no_browser_args_parses_existing_correctly() {
+        let args = parse_cli_args(str_vec(&["regular", "request", "--no-test"])).unwrap();
+        assert_eq!(args.user_request, "regular request");
+        assert!(args.no_test);
+        assert_eq!(args.browser_url, None);
+        assert_eq!(args.input_selector, None);
+    }
+
+    #[test]
+    fn test_existing_cli_args_with_browser_args() {
+        let args = parse_cli_args(str_vec(&[
+            "--project-root", "/path/to/proj",
+            "--browser", "https://example.com",
+            "--input", "#myInput",
+            "perform web task",
+            "--no-test"
+        ])).unwrap();
+        assert_eq!(args.project_root, PathBuf::from("/path/to/proj"));
+        assert_eq!(args.browser_url, Some("https://example.com".to_string()));
+        assert_eq!(args.input_selector, Some("#myInput".to_string()));
+        assert_eq!(args.user_request, "perform web task");
+        assert!(args.no_test);
+    }
+
+    #[test]
+    fn test_browser_options_interspersed_with_request_parts() {
+        // The current parser design consumes known options greedily.
+        // So, "request_part1 --browser http://a.co request_part2 --input #in"
+        // will correctly parse --browser and --input, and remaining parts form the request.
+        let args = parse_cli_args(str_vec(&[
+            "part1",
+            "--browser", "http://example.com",
+            "part2",
+            "--input", "input#id",
+            "part3"
+        ])).unwrap();
+        assert_eq!(args.browser_url, Some("http://example.com".to_string()));
+        assert_eq!(args.input_selector, Some("input#id".to_string()));
+        assert_eq!(args.user_request, "part1 part2 part3");
+    }
+     #[test]
+    fn test_ensure_url_is_not_an_option() {
+        // Test that --browser doesn't consume a subsequent known option as its URL
+        let err = parse_cli_args(str_vec(&["--browser", "--no-test"])).unwrap_err();
+        assert_eq!(err, "Missing URL for --browser option");
+
+        // Test that --browser does not consume another browser option as its URL
+        let err2 = parse_cli_args(str_vec(&["--browser", "--input"])).unwrap_err();
+        assert_eq!(err2, "Missing URL for --browser option");
+    }
+}
+
+#[cfg(test)]
+mod tests_cli_local_option {
+    use super::*;
+
+    fn str_vec(args: &[&str]) -> Vec<String> {
+        std::iter::once("gem_program_name".to_string())
+            .chain(args.iter().map(|s| s.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn test_parse_local_flag() {
+        let args = parse_cli_args(str_vec(&["--local", "summarize this"])).unwrap();
+        assert!(args.local_model);
+        assert_eq!(args.user_request, "summarize this");
+    }
+
+    #[test]
+    fn test_local_flag_defaults_to_false() {
+        let args = parse_cli_args(str_vec(&["regular request"])).unwrap();
+        assert!(!args.local_model);
+    }
+
+    #[test]
+    fn test_local_flag_with_other_args() {
+        let args = parse_cli_args(str_vec(&[
+            "--local",
+            "--project-root", "/tmp",
+            "process data locally"
+        ])).unwrap();
+        assert!(args.local_model);
+        assert_eq!(args.project_root, PathBuf::from("/tmp"));
+        assert_eq!(args.user_request, "process data locally");
+    }
+
+    #[test]
+    fn test_local_flag_takes_precedence_over_browser() {
+        // This test ensures that if --local is present, browser args are parsed but main logic should ignore them.
+        // The actual precedence is handled in main.rs, parser just parses what's given.
+        let args = parse_cli_args(str_vec(&[
+            "--local",
+            "--browser", "http://example.com",
+            "--input", "#input",
+            "local task"
+        ])).unwrap();
+        assert!(args.local_model);
+        assert_eq!(args.browser_url, Some("http://example.com".to_string())); // Parsed
+        assert_eq!(args.input_selector, Some("#input".to_string())); // Parsed
+        assert_eq!(args.user_request, "local task");
+    }
+
+    #[test]
+    fn test_local_flag_alone_is_sufficient_input() {
+        let args = parse_cli_args(str_vec(&["--local"])).unwrap();
+        assert!(args.local_model);
+        assert!(args.user_request.is_empty()); // User request can be empty if --local is provided
     }
 }

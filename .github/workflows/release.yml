@@ -1,0 +1,181 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*' # Trigger on version tags like v0.1.0
+
+env:
+  CARGO_TERM_COLOR: always
+  CRATE_NAME: gem # Replace with your crate name if different
+
+jobs:
+  build_and_release:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: gem
+            asset_name_suffix: linux-amd64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: gem
+            asset_name_suffix: macos-amd64
+          - os: macos-latest # For Apple Silicon
+            target: aarch64-apple-darwin
+            binary_name: gem
+            asset_name_suffix: macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: gem.exe
+            asset_name_suffix: windows-amd64
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ matrix.target }}
+        override: true
+
+    - name: Build binary
+      run: cargo build --verbose --release --target ${{ matrix.target }}
+      env:
+        RUSTFLAGS: "-C strip=symbols" # Reduce binary size
+
+    - name: Prepare artifacts for release
+      run: |
+        cd target/${{ matrix.target }}/release
+        strip ${{ matrix.binary_name }} || true # Strip binary (ignore errors for Windows, etc.)
+        tar -czvf ${{ env.CRATE_NAME }}-${{ github.ref_name }}-${{ matrix.asset_name_suffix }}.tar.gz ${{ matrix.binary_name }}
+        cd -
+      if: matrix.os != 'windows-latest'
+
+    - name: Prepare Windows artifacts for release
+      run: |
+        cd target\${{ matrix.target }}\release
+        7z a ${{ env.CRATE_NAME }}-${{ github.ref_name }}-${{ matrix.asset_name_suffix }}.zip ${{ matrix.binary_name }}
+        cd -
+      if: matrix.os == 'windows-latest'
+      shell: pwsh
+
+    - name: Upload binaries to release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: target/${{ matrix.target }}/release/${{ env.CRATE_NAME }}-${{ github.ref_name }}-${{ matrix.asset_name_suffix }}.*
+        asset_name: ${{ env.CRATE_NAME }}-${{ github.ref_name }}-${{ matrix.asset_name_suffix }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
+        tag: ${{ github.ref }}
+        overwrite: true
+        body: "Automated release for ${{ env.CRATE_NAME }} version ${{ github.ref_name }}"
+
+  create_install_scripts:
+    name: Create Install Scripts
+    runs-on: ubuntu-latest
+    needs: build_and_release # Run after all builds are complete
+    steps:
+    - uses: actions/checkout@v3
+    - name: Create install.sh for macOS/Linux
+      run: |
+        echo '#!/bin/sh' > install.sh
+        echo 'set -e' >> install.sh
+        echo 'echo "Downloading gem..."' >> install.sh
+        echo 'OWNER_REPO="fschutt/gem"' # Replace with your owner/repo
+        echo 'LATEST_RELEASE_URL="https://api.github.com/repos/$OWNER_REPO/releases/latest"' >> install.sh
+        echo 'VERSION_TAG=$(curl -sSL $LATEST_RELEASE_URL | grep tag_name | cut -d '"'"'"'"' -f 4)' >> install.sh
+        echo 'echo "Latest version: $VERSION_TAG"' >> install.sh
+        echo '' >> install.sh
+        echo 'TARGET_OS=""' >> install.sh
+        echo 'TARGET_ARCH=""' >> install.sh
+        echo 'case "$(uname -s)" in' >> install.sh
+        echo '    Linux*)     TARGET_OS=linux;;' >> install.sh
+        echo '    Darwin*)    TARGET_OS=macos;;' >> install.sh
+        echo '    *)          echo "Unsupported OS: $(uname -s)"; exit 1;;' >> install.sh
+        echo 'esac' >> install.sh
+        echo '' >> install.sh
+        echo 'case "$(uname -m)" in' >> install.sh
+        echo '    x86_64)    TARGET_ARCH=amd64;;' >> install.sh
+        echo '    arm64|aarch64) TARGET_ARCH=arm64;;' >> install.sh
+        echo '    *)         echo "Unsupported architecture: $(uname -m)"; exit 1;;' >> install.sh
+        echo 'esac' >> install.sh
+        echo '' >> install.sh
+        echo '# For macOS, prefer arm64 if available, otherwise amd64' >> install.sh
+        echo 'if [ "$TARGET_OS" = "macos" ] && [ "$TARGET_ARCH" = "arm64" ]; then' >> install.sh
+        echo '    BINARY_URL="https://github.com/$OWNER_REPO/releases/download/$VERSION_TAG/gem-$VERSION_TAG-macos-arm64.tar.gz"' >> install.sh
+        echo '    # Fallback to amd64 if arm64 release asset is not found (e.g. older release)' >> install.sh
+        echo '    if ! curl -sSLI "$BINARY_URL" | grep -q "HTTP/2 200"; then' >> install.sh
+        echo '        echo "macOS arm64 binary not found for $VERSION_TAG, trying amd64..."' >> install.sh
+        echo '        TARGET_ARCH=amd64 # Explicitly set for clarity if we fallback' >> install.sh
+        echo '        BINARY_URL="https://github.com/$OWNER_REPO/releases/download/$VERSION_TAG/gem-$VERSION_TAG-macos-amd64.tar.gz"' >> install.sh
+        echo '    fi' >> install.sh
+        echo 'elif [ "$TARGET_OS" = "macos" ] && [ "$TARGET_ARCH" = "amd64" ]; then' >> install.sh
+        echo '    BINARY_URL="https://github.com/$OWNER_REPO/releases/download/$VERSION_TAG/gem-$VERSION_TAG-macos-amd64.tar.gz"' >> install.sh
+        echo 'else' >> install.sh
+        echo '    BINARY_URL="https://github.com/$OWNER_REPO/releases/download/$VERSION_TAG/gem-$VERSION_TAG-${TARGET_OS}-${TARGET_ARCH}.tar.gz"' >> install.sh
+        echo 'fi' >> install.sh
+        echo '' >> install.sh
+        echo 'INSTALL_DIR="/usr/local/bin"' >> install.sh
+        echo 'TEMP_DIR=$(mktemp -d)' >> install.sh
+        echo '' >> install.sh
+        echo 'echo "Downloading from $BINARY_URL"' >> install.sh
+        echo 'curl -sSL "$BINARY_URL" | tar -xz -C "$TEMP_DIR"' >> install.sh
+        echo '' >> install.sh
+        echo 'echo "Installing gem to $INSTALL_DIR/gem..."' >> install.sh
+        echo 'sudo mv "$TEMP_DIR/gem" "$INSTALL_DIR/gem"' >> install.sh
+        echo 'rm -rf "$TEMP_DIR"' >> install.sh
+        echo 'echo "gem installed successfully to $INSTALL_DIR/gem"' >> install.sh
+        echo 'echo "Make sure $INSTALL_DIR is in your PATH."' >> install.sh
+        chmod +x install.sh
+
+    - name: Create install.ps1 for Windows
+      run: |
+        $ownerRepo = "fschutt/gem" # Replace with your owner/repo
+        $scriptContent = @"
+`$ErrorActionPreference = "Stop"
+Write-Host "Downloading gem..."
+
+`$LatestReleaseUrl = "https://api.github.com/repos/$ownerRepo/releases/latest"
+`$VersionTag = (Invoke-RestMethod -Uri `$LatestReleaseUrl).tag_name
+Write-Host "Latest version: `$VersionTag"
+
+`$BinaryUrl = "https://github.com/$ownerRepo/releases/download/`$VersionTag/gem-`$VersionTag-windows-amd64.zip"
+
+`$InstallDir = Join-Path `$env:USERPROFILE "bin" # Or a more standard location like Program Files
+`$GemExe = Join-Path `$InstallDir "gem.exe"
+`$TempDir = Join-Path `$env:TEMP (New-Guid).ToString()
+
+Write-Host "Downloading from `$BinaryUrl"
+New-Item -ItemType Directory -Path `$TempDir -Force | Out-Null
+Invoke-WebRequest -Uri `$BinaryUrl -OutFile (Join-Path `$TempDir "gem.zip")
+
+Write-Host "Installing gem to `$GemExe..."
+Expand-Archive -Path (Join-Path `$TempDir "gem.zip") -DestinationPath `$TempDir -Force
+if (-not (Test-Path `$InstallDir)) {
+    New-Item -ItemType Directory -Path `$InstallDir -Force | Out-Null
+}
+Move-Item -Path (Join-Path `$TempDir "gem.exe") -Destination `$GemExe -Force
+
+Remove-Item -Path `$TempDir -Recurse -Force
+Write-Host "gem installed successfully to `$GemExe"
+Write-Host "Make sure '`$InstallDir' is in your PATH."
+Write-Host "You might need to restart your terminal or run 'refreshenv' (if using Chocolatey)."
+"@
+        Set-Content -Path install.ps1 -Value $scriptContent
+      shell: pwsh
+
+    - name: Upload install scripts to release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: |
+          install.sh
+          install.ps1
+        tag: ${{ github.ref }}
+        overwrite: true
+        body: "Install scripts for ${{ env.CRATE_NAME }} version ${{ github.ref_name }}"

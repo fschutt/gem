@@ -77,6 +77,7 @@ impl SymbolCollector {
         module_path
     }
 
+    /*
     fn add_symbol(&mut self, name: &str, symbol_type: SymbolType, doc: String) {
         // Base path from file location
         let mut path = self.current_module_path();
@@ -97,6 +98,33 @@ impl SymbolCollector {
                 symbol_type,
                 hover_text: doc,
                 source_vertex_id: format!("{:?}", self.current_file),
+                span_bytes: None, // Old add_symbol, span is None
+            },
+        );
+    }
+    */
+    // New method to include span
+    fn add_symbol_with_span(&mut self, name: &str, symbol_type: SymbolType, doc: String, span: Option<(usize, usize)>) {
+        // Base path from file location
+        let mut path = self.current_module_path();
+
+        // Add current traversal path for nested items
+        for part in &self.current_path {
+            path.push(part.clone());
+        }
+
+        // Add the item name
+        path.push(name.to_string());
+        let full_path = path.join("::");
+
+        self.symbols.insert(
+            full_path.clone(),
+            SymbolInfo {
+                identifier: name.to_string(),
+                symbol_type,
+                hover_text: doc,
+                source_vertex_id: format!("{:?}", self.current_file),
+                span_bytes: span,
             },
         );
     }
@@ -147,40 +175,40 @@ impl SymbolCollector {
 impl<'ast> Visit<'ast> for SymbolCollector {
     fn visit_item_struct(&mut self, i: &'ast ItemStruct) {
         let doc = self.extract_doc(&i.attrs);
-        self.add_symbol(&i.ident.to_string(), SymbolType::Struct, doc);
+        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Struct, doc, span_bytes);
 
         // Add fields
         if let syn::Fields::Named(fields) = &i.fields {
             for field in &fields.named {
                 if let Some(ident) = &field.ident {
                     let field_doc = self.extract_doc(&field.attrs);
-
-                    // Create proper module path for field
-                    let mut path = self.current_module_path();
-                    for part in &self.current_path {
-                        path.push(part.clone());
-                    }
-                    path.push(i.ident.to_string());
-                    path.push(ident.to_string());
-                    let full_field_path = path.join("::");
+                    let field_span_bytes = Some((syn::spanned::Spanned::span(field).start().byte, syn::spanned::Spanned::span(field).end().byte));
 
                     // Format field type if available
-                    let mut hover_text = field_doc;
+                    let mut hover_text = field_doc.clone(); // Clone field_doc as it's used later by itself
                     if let syn::Type::Path(type_path) = &field.ty {
                         if let Some(segment) = type_path.path.segments.last() {
-                            hover_text = format!("{} (type: {})", hover_text, segment.ident);
+                            hover_text = format!("{} (type: {})", field_doc, segment.ident);
                         }
                     }
+                    // Need to construct the full path for the field before calling add_symbol_with_span
+                    let mut field_path_parts = self.current_module_path();
+                    for part in &self.current_path {
+                        field_path_parts.push(part.clone());
+                    }
+                    field_path_parts.push(i.ident.to_string());
+                    // field_path_parts.push(ident.to_string()); // add_symbol_with_span will add the ident
 
-                    self.symbols.insert(
-                        full_field_path,
-                        SymbolInfo {
-                            identifier: ident.to_string(),
-                            symbol_type: SymbolType::Field,
-                            hover_text,
-                            source_vertex_id: format!("{:?}", self.current_file),
-                        },
-                    );
+                    // Temporarily change current_path for add_symbol_with_span to correctly build the field's full path
+                    let original_current_path = self.current_path.clone();
+                    let mut temp_path = self.current_path.clone();
+                    temp_path.push(i.ident.to_string());
+                    self.current_path = temp_path;
+
+                    self.add_symbol_with_span(ident.to_string().as_str(), SymbolType::Field, hover_text, field_span_bytes);
+
+                    self.current_path = original_current_path; // Restore current_path
                 }
             }
         }
@@ -190,30 +218,23 @@ impl<'ast> Visit<'ast> for SymbolCollector {
 
     fn visit_item_enum(&mut self, i: &'ast ItemEnum) {
         let doc = self.extract_doc(&i.attrs);
-        self.add_symbol(&i.ident.to_string(), SymbolType::Enum, doc);
+        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Enum, doc, span_bytes);
 
         // Add variants
         for variant in &i.variants {
             let variant_doc = self.extract_doc(&variant.attrs);
+            let variant_span_bytes = Some((syn::spanned::Spanned::span(variant).start().byte, syn::spanned::Spanned::span(variant).end().byte));
 
-            // Create proper module path for variant
-            let mut path = self.current_module_path();
-            for part in &self.current_path {
-                path.push(part.clone());
-            }
-            path.push(i.ident.to_string());
-            path.push(variant.ident.to_string());
-            let full_variant_path = path.join("::");
+            // Temporarily change current_path for add_symbol_with_span to correctly build the variant's full path
+            let original_current_path = self.current_path.clone();
+            let mut temp_path = self.current_path.clone();
+            temp_path.push(i.ident.to_string());
+            self.current_path = temp_path;
 
-            self.symbols.insert(
-                full_variant_path,
-                SymbolInfo {
-                    identifier: variant.ident.to_string(),
-                    symbol_type: SymbolType::Variant,
-                    hover_text: variant_doc,
-                    source_vertex_id: format!("{:?}", self.current_file),
-                },
-            );
+            self.add_symbol_with_span(variant.ident.to_string().as_str(), SymbolType::Variant, variant_doc, variant_span_bytes);
+
+            self.current_path = original_current_path; // Restore current_path
         }
 
         visit::visit_item_enum(self, i);
@@ -331,13 +352,14 @@ impl<'ast> Visit<'ast> for SymbolCollector {
 
         // Add attributes to hover text
         let hover_text = format!("{}\nSignature: {}", doc, signature);
-
-        self.add_symbol(&i.sig.ident.to_string(), symbol_type, hover_text);
+        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        self.add_symbol_with_span(&i.sig.ident.to_string(), symbol_type, hover_text, span_bytes);
         visit::visit_item_fn(self, i);
     }
 
     fn visit_impl_item_fn(&mut self, i: &'ast syn::ImplItemFn) {
         let doc = self.extract_doc(&i.attrs);
+        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
 
         // Capture function signature
         let mut signature = String::new();
@@ -436,7 +458,7 @@ impl<'ast> Visit<'ast> for SymbolCollector {
         let hover_text = format!("{}\nSignature: {}", doc, signature);
 
         // Add method to symbol map with proper type
-        self.add_symbol(&i.sig.ident.to_string(), SymbolType::Method, hover_text);
+        self.add_symbol_with_span(&i.sig.ident.to_string(), SymbolType::Method, hover_text, span_bytes);
 
         // Continue visiting nested items
         visit::visit_impl_item_fn(self, i);
@@ -444,7 +466,8 @@ impl<'ast> Visit<'ast> for SymbolCollector {
 
     fn visit_item_trait(&mut self, i: &'ast ItemTrait) {
         let doc = self.extract_doc(&i.attrs);
-        self.add_symbol(&i.ident.to_string(), SymbolType::Trait, doc);
+        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Trait, doc, span_bytes);
 
         self.enter_module(&i.ident.to_string());
         visit::visit_item_trait(self, i);
@@ -479,19 +502,22 @@ impl<'ast> Visit<'ast> for SymbolCollector {
 
     fn visit_item_const(&mut self, i: &'ast ItemConst) {
         let doc = self.extract_doc(&i.attrs);
-        self.add_symbol(&i.ident.to_string(), SymbolType::Const, doc);
+        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Const, doc, span_bytes);
         visit::visit_item_const(self, i);
     }
 
     fn visit_item_static(&mut self, i: &'ast ItemStatic) {
         let doc = self.extract_doc(&i.attrs);
-        self.add_symbol(&i.ident.to_string(), SymbolType::Static, doc);
+        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Static, doc, span_bytes);
         visit::visit_item_static(self, i);
     }
 
     fn visit_item_mod(&mut self, i: &'ast ItemMod) {
         let doc = self.extract_doc(&i.attrs);
-        self.add_symbol(&i.ident.to_string(), SymbolType::Module, doc);
+        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Module, doc, span_bytes);
 
         if let Some(content) = &i.content {
             self.enter_module(&i.ident.to_string());
@@ -506,7 +532,8 @@ impl<'ast> Visit<'ast> for SymbolCollector {
 
     fn visit_item_type(&mut self, i: &'ast ItemType) {
         let doc = self.extract_doc(&i.attrs);
-        self.add_symbol(&i.ident.to_string(), SymbolType::TypeAlias, doc);
+        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        self.add_symbol_with_span(&i.ident.to_string(), SymbolType::TypeAlias, doc, span_bytes);
         visit::visit_item_type(self, i);
     }
 
@@ -516,7 +543,8 @@ impl<'ast> Visit<'ast> for SymbolCollector {
             .ident
             .as_ref()
             .map_or("unnamed_macro".to_string(), |id| id.to_string());
-        self.add_symbol(&name, SymbolType::Macro, doc);
+        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        self.add_symbol_with_span(&name, SymbolType::Macro, doc, span_bytes);
         visit::visit_item_macro(self, i);
     }
 }
@@ -566,6 +594,7 @@ pub struct SymbolInfo {
     pub symbol_type: SymbolType,
     pub hover_text: String,
     pub source_vertex_id: String,
+    pub span_bytes: Option<(usize, usize)>, // Added to store byte offsets of the span
 }
 
 /// A hierarchical representation of symbols
@@ -1082,4 +1111,103 @@ fn extract_function_signature(hover_text: &str) -> String {
 /// Extracts name from path
 fn extract_name(path: &str) -> String {
     path.split("::").last().unwrap_or(path).to_string()
+}
+
+/// Finds the byte span of a specific Rust item within file content.
+///
+/// `item_path_suffix`: The item name (e.g., "MyStruct" or "my_function").
+/// `file_path_for_module_context`: The actual path to the Rust file (e.g., `src/module.rs`).
+/// `project_root`: Path to the project root.
+pub fn find_item_span(
+    file_content: &str,
+    item_path_suffix: &str,
+    file_path_for_module_context: &Path,
+    project_root: &Path,
+) -> Result<Option<(usize, usize)>, String> {
+    let syntax_tree = syn::parse_file(file_content)
+        .map_err(|e| format!("Failed to parse file content: {}", e))?;
+
+    let crate_name = get_crate_name(project_root);
+    let mut collector = SymbolCollector::new(&crate_name, project_root);
+    collector.current_file = file_path_for_module_context.to_path_buf();
+    collector.visit_file(&syntax_tree);
+
+    let collected_symbols = collector.get_symbols();
+
+    // We need to find a symbol whose fully qualified name, when considering its module path,
+    // ends with the item_path_suffix.
+    // Example: If item_path_suffix is "my_function" and file is src/utils.rs (crate_name "my_crate"),
+    // we are looking for a symbol like "my_crate::utils::my_function".
+    // If item_path_suffix is "MyStruct::new", we are looking for "my_crate::module::MyStruct::new".
+    // The SymbolCollector stores full paths like "crate_name::module::ItemName" or "crate_name::module::StructName::FieldName".
+
+    for (full_path, symbol_info) in collected_symbols {
+        // Check if the full_path ends with item_path_suffix.
+        // We need to be careful if item_path_suffix could contain '::' itself (e.g. for methods or associated items).
+        // A simple ends_with check might be too naive if item_path_suffix is just "ItemName"
+        // and full_path is "crate::module::ItemName::some_method".
+        // The LLM is instructed to provide "ItemName" or "function_name" as suffix.
+        // If item_path_suffix contains "::", it implies a nested item, e.g. "MyStruct::my_method"
+
+        let path_parts: Vec<&str> = full_path.split("::").collect();
+        let suffix_parts: Vec<&str> = item_path_suffix.split("::").collect();
+
+        if path_parts.ends_with(&suffix_parts) {
+            // Additionally, ensure that the item being matched is directly in the module,
+            // not a sub-item if the suffix is simple.
+            // Example: if item_path_suffix is "MyStruct", full_path "my_crate::my_mod::MyStruct" should match,
+            // but "my_crate::my_mod::MyStruct::field" should not.
+            // This is implicitly handled if suffix_parts.len() == 1 and path_parts.len() matches the expected module depth + 1.
+            // Or more simply, if the symbol's own identifier matches the last part of the suffix.
+            if symbol_info.identifier == *suffix_parts.last().unwrap_or(&"") {
+                 if let Some(span) = symbol_info.span_bytes {
+                    return Ok(Some(span));
+                }
+            }
+        }
+    }
+
+    Ok(None) // Item not found
+}
+
+/// Extracts filenames and their corresponding Rust code blocks from Markdown content.
+///
+/// Assumes filenames are on lines like "File: path/to/file.rs" or "path/to/file.rs",
+/// followed by a Rust code block.
+pub fn extract_file_code_blocks_from_markdown(
+    markdown_content: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let mut results = Vec::new();
+    // Regex to find filenames (potentially with "File: " prefix) followed by Rust code blocks
+    // Group 1: Optional "File: "
+    // Group 2: Filename (e.g., path/to/file.rs)
+    // Group 3: Code block content
+    let re = Regex::new(r"(?m)^(?:File:\s*)?([\w/\.-]+\.rs)\s*\n```(?:rust|rs)\s*\n([\s\S]*?)\n```")
+        .map_err(|e| format!("Regex compilation failed: {}", e))?;
+
+    for cap in re.captures_iter(markdown_content) {
+        let file_path = cap.get(1)
+            .ok_or_else(|| "Failed to capture file path".to_string())?
+            .as_str()
+            .trim()
+            .to_string();
+        let code_block = cap.get(2)
+            .ok_or_else(|| "Failed to capture code block".to_string())?
+            .as_str()
+            .trim()
+            .to_string();
+        results.push((file_path, code_block));
+    }
+
+    if results.is_empty() {
+        // Depending on desired behavior, could return Ok(Vec::new()) or Err
+        // For now, let's return an error if no blocks are found to indicate
+        // that the markdown might not be in the expected format.
+        // Or, more leniently, Ok(vec![]) if markdown without blocks is fine.
+        // The prompt asks for Err or empty Vec. Let's go with empty Vec for "no blocks".
+        // But if the regex itself is problematic, that's an Err.
+        // The current structure returns Ok(vec![]) if no captures, which is fine.
+    }
+
+    Ok(results)
 }

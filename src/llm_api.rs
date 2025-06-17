@@ -69,6 +69,8 @@ pub enum CodeChangeAction {
     ApplyDiff,
     ReplaceLines,
     InsertAfterLine,
+    ReplaceItemInSection, // New variant for replacing a specific Rust item
+    ProcessMarkdownAndApplyChanges, // New variant for processing a full markdown document
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

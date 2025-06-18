@@ -6,6 +6,7 @@ pub mod parser;
 pub mod locatesource;
 pub mod browser_interaction;
 pub mod gemma;
+pub mod llm_response_parser;
 
 // Standard library imports needed by moved functions
 use std::collections::HashMap;
@@ -17,9 +18,7 @@ use std::time::Duration; // For ProgressBar and potentially for reqwest timeout 
 
 // Crate-local imports (modules defined above)
 use cache::Session;
-use cli::CustomCliArgs; // Renamed to avoid conflict if main also has one.
-                        // Better to use crate::cli::CustomCliArgs if main also uses it.
-                        // For now, assuming cli module is part of this lib.
+use cli::CustomCliArgs; // Used for structuring command line arguments.
 use llm_api::LLMApi; // Use the trait
 
 // Re-export types needed for integration tests and by the binary crate
@@ -57,7 +56,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 // --- Main Agent Logic (moved from main.rs) ---
 pub fn run_gem_agent(
-    args: CustomCliArgs, // Use the one from cli.rs
+    mut args: CustomCliArgs, // Use the one from cli.rs, make mutable if user_request is joined into it
     session: &mut Session, // Use the one from cache.rs
     llm_api: Box<dyn LLMApi>, // Use the trait from llm_api.rs
     is_interactive: bool,
@@ -83,7 +82,12 @@ pub fn run_gem_agent(
     let initial_context = gather_initial_project_info(&project_root)?;
     if let Some(p) = &pb { p.finish_with_message("Initial information gathered."); pb = None; }
 
-    let first_prompt = construct_first_gemini_prompt(&args.user_request, &initial_context);
+    // Construct user_request from user_request_parts
+    let user_request_str = args.user_request_parts.join(" ");
+    // Note: user_request_str is constructed here. If CustomCliArgs were to have a processed
+    // `user_request: String` field, this could be simplified. For now, this approach is fine.
+
+    let first_prompt = construct_first_gemini_prompt(&user_request_str, &initial_context);
 
     if args.debug_mode == Some(crate::cli::DebugMode::Initial) { // Assuming cli::DebugMode is accessible
         println!("\n--- DEBUG: INITIAL PROMPT ---");
@@ -164,7 +168,8 @@ pub fn run_gem_agent(
         session.save()?;
         current_needed_items.clear();
 
-        let sufficiency_prompt = construct_sufficiency_check_prompt(&args.user_request, &gathered_data_for_gemini);
+        let user_request_str = args.user_request_parts.join(" "); // Reconstruct here too or pass around
+        let sufficiency_prompt = construct_sufficiency_check_prompt(&user_request_str, &gathered_data_for_gemini);
         session.append_to_prompt("sufficient", &sufficiency_prompt)?;
 
         if args.debug_mode == Some(crate::cli::DebugMode::Sufficient) {
@@ -188,7 +193,7 @@ pub fn run_gem_agent(
             else { println!("Using cached sufficiency response"); }
             Ok(cached_response)
         } else {
-            let res = call_gemini_api_with_session( // Changed from mock
+            let res = call_gemini_api_with_session(
                 session,
                 llm_api.as_ref(),
                 "sufficient",
@@ -229,7 +234,8 @@ pub fn run_gem_agent(
             println!("\ngem: Phase 3: Code Generation & Verification Attempt {}/{}...", verification_attempt, args.max_verify_retries + 1);
         }
 
-        let code_gen_prompt = construct_code_generation_prompt(&args.user_request, &gathered_data_for_gemini, !args.no_test, if verification_attempt > 1 { Some(&verification_failures_context) } else { None }, &args.verify_with);
+        let user_request_str = args.user_request_parts.join(" "); // Reconstruct here too or pass around
+        let code_gen_prompt = construct_code_generation_prompt(&user_request_str, &gathered_data_for_gemini, !args.no_test, if verification_attempt > 1 { Some(&verification_failures_context) } else { None }, &args.verify_with);
         session.append_to_prompt("change", &code_gen_prompt)?;
 
         if args.debug_mode == Some(crate::cli::DebugMode::Changes) && verification_attempt == 1 {
@@ -251,7 +257,7 @@ pub fn run_gem_agent(
              else { println!("Using cached code generation response"); }
             Ok(cached_response)
         } else {
-            let res = call_gemini_api_with_session( // Changed from mock
+            let res = call_gemini_api_with_session(
                 session,
                 llm_api.as_ref(),
                 "change",
@@ -261,7 +267,29 @@ pub fn run_gem_agent(
             res
         };
         if let Some(p) = &pb { p.finish_and_clear(); pb = None; }
-        let code_gen_response: GeminiCodeGenerationResponse = serde_json::from_str(&gemini_code_gen_response_str_result?)?;
+        let mut code_gen_response: GeminiCodeGenerationResponse = serde_json::from_str(&gemini_code_gen_response_str_result?)?;
+
+        // If ProcessMarkdownAndApplyChanges is used, extract explanation from the markdown content.
+        for change in &code_gen_response.changes {
+            if change.action == CodeChangeAction::ProcessMarkdownAndApplyChanges {
+                if let Some(markdown_content) = &change.content {
+                    match crate::llm_response_parser::extract_explanation_from_markdown(markdown_content) {
+                        Ok(extracted_explanation) => {
+                            if !extracted_explanation.is_empty() {
+                                // Override or supplement the existing explanation
+                                code_gen_response.explanation = extracted_explanation;
+                                // If multiple markdown changes, this will take the last one.
+                                // Consider concatenation or other strategies if needed.
+                            }
+                        }
+                        Err(e) => {
+                            // Log the error but don't fail the whole process
+                            eprintln!("gem: WARN: Failed to extract explanation from markdown: {}", e);
+                        }
+                    }
+                }
+            }
+        }
 
         if is_interactive { if let Some(p) = &pb {p.println(format!("gem: Gemini proposes changes: {}", code_gen_response.explanation));} }
         else { println!("Gemini proposes changes: {}", code_gen_response.explanation); }
@@ -307,7 +335,8 @@ pub fn run_gem_agent(
                 else { println!("Verification successful!"); }
                 println!("Output:\n{}", output);
 
-                let commit_message = format!("gem: Automated change for \"{}\"\n\n{}\n\n", args.user_request, code_gen_response.explanation);
+                let user_request_str = args.user_request_parts.join(" "); // Reconstruct here too or pass around
+                let commit_message = format!("gem: Automated change for \"{}\"\n\n{}\n\n", user_request_str, code_gen_response.explanation);
                 git_commit_mock(&project_root, &commit_message, verification_attempt > 1)?;
                 println!("\ngem: Task completed successfully.");
                 return Ok(());
@@ -658,45 +687,6 @@ fn execute_verification_command_mock(attempt: &mut usize, _project_root: &Path, 
     }
 }
 
-// This function is problematic here as it uses verification_attempt and code_change_attempt
-// which are specific to the main loop's state.
-// It should ideally not be part of the library if it's purely for main's old mock flow.
-// For now, it's moved, but it's a candidate for removal or #[cfg(test)].
-#[cfg(debug_assertions)] // Or some other config to indicate it's for debug/testing
-fn call_gemini_api_mock(
-    _retry_count: &mut usize, // Renamed from verification_attempt to avoid confusion
-    _codegen_attempt: &mut usize,
-    _api_key: &str, // Not used in mock
-    prompt: &str,
-    expected_response_type: &str,
-) -> Result<String> {
-    match expected_response_type {
-        "GeminiNeededItemsResponse" => {
-            let main_lib_path = if Path::new("src/main.rs").exists() { "src/main.rs" } else { "src/lib.rs" };
-            // std::thread::sleep(std::time::Duration::from_secs(1)); // Shorter sleep for tests
-            Ok(format!(r#"{{"needed_items": ["{}"]}}"#, main_lib_path))
-        }
-        "GeminiSufficiencyResponse" => {
-            // *_retry_count += 1; // This was for verification retries, not sufficiency.
-            // std::thread::sleep(std::time::Duration::from_secs(1));
-            // Simplified mock: always sufficient if "SomeStruct" is in prompt, else requests it.
-            if prompt.contains("SomeStruct") || prompt.contains("src/lib.rs") { // Make it easier to get to sufficient
-                Ok(serde_json::to_string(&GeminiSufficiencyResponse { sufficient: true, needed_items: vec![] }).unwrap())
-            } else {
-                Ok(serde_json::to_string(&GeminiSufficiencyResponse { sufficient: false, needed_items: vec!["my_crate::some_module::SomeStruct".to_string()] }).unwrap())
-            }
-        }
-        "GeminiCodeGenerationResponse" => {
-            // *_codegen_attempt += 1;
-            // std::thread::sleep(std::time::Duration::from_secs(1));
-            let explanation = "Mocked code generation response.".to_string();
-            let changes = vec![CodeChange {
-                file_path: "src/lib.rs".to_string(),
-                action: CodeChangeAction::ReplaceContent,
-                content: Some("pub fn mock_hello() -> String { \"hello from mock\".to_string() }".to_string()),
-            }];
-            Ok(serde_json::to_string_pretty(&GeminiCodeGenerationResponse { changes, tests: None, explanation }).unwrap())
-        }
-        _ => Err(format!("MockLLMApi: Unknown expected_response_type for mock: {}", expected_response_type).into()),
-    }
-}
+// The call_gemini_api_mock function was here, but has been removed as it was unused
+// and marked as problematic for library use. Mocking is now primarily handled by
+// MockLLMApi in tests.

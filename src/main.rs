@@ -1,139 +1,146 @@
-use std::env;
-use std::path::PathBuf; // Keep for project_root canonicalization
-use std::process; // For process::exit
+use anyhow::Result;
+use clap::Parser;
+use gem::cli::CustomCliArgs; // Assuming your CLI args are defined here
+use std::io::{self, IsTerminal, Read};
 
-// Use items from our library crate "gem"
-use gem::cli::{self, CustomCliArgs}; // cli module from lib
-use gem::cache::Session;             // cache module from lib
-use gem::llm_api::{LLMApi, RealLLMApi}; // llm_api module from lib
-use gem::browser_interaction;         // Added for browser interaction
-use gem::gemma;                       // Added for local Gemma interaction
-use gem::run_gem_agent;               // The main logic function
+// Modules for model loading and inference logic
+mod gemma;
+mod inference;
 
-// Type alias for Result, specific to main, or use gem::Result
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Parse command line arguments using CustomCliArgs
+    let args = CustomCliArgs::parse();
 
-
-fn main() -> Result<()> {
-    let is_interactive = atty::is(atty::Stream::Stdout);
-    // ProgressBar is now handled within run_gem_agent
-
-    let raw_args: Vec<String> = env::args().collect();
-    let args = match cli::parse_cli_args(raw_args) { // This should use gem::cli::parse_cli_args
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            cli::print_custom_help(); // This should use gem::cli::print_custom_help
-            process::exit(1);
-        }
+    // Determine the user's request from arguments or stdin
+    let user_request = if !args.user_request_parts.is_empty() {
+        args.user_request_parts.join(" ")
+    } else if !io::stdin().is_terminal() {
+        // Check if stdin is being piped
+        let mut buffer = String::new();
+        io::stdin().read_to_string(&mut buffer)?;
+        buffer.trim().to_string() // Trim whitespace, especially trailing newlines
+    } else {
+        // No user request provided via argument or stdin pipe
+        eprintln!("Error: No user request provided. Please provide a request via arguments or pipe it through stdin.");
+        std::process::exit(1);
     };
 
-    if args.show_help {
-        cli::print_custom_help(); // This should use gem::cli::print_custom_help
-        return Ok(());
+    if user_request.is_empty() {
+        eprintln!("Error: User request is empty.");
+        std::process::exit(1);
     }
 
-    let project_root = args.project_root.canonicalize().map_err(|e| {
-        format!(
-            "Failed to canonicalize project root {:?}: {}",
-            args.project_root, e
-        )
-    })?;
+    println!("Processing request: {}", user_request);
 
-    // Initial messages (simplified in main, more detail in run_gem_agent if interactive)
-    if is_interactive {
-        println!("gem: Starting session..."); // General startup message
-        println!("gem: Project root: {:?}", project_root);
-        println!("gem: User request: \"{}\"", args.user_request);
-
-    } else {
-        // Non-interactive might want less verbose initial output or structured logging
-        println!("Project root: {:?}", project_root);
-        println!("User request: \"{}\"", args.user_request);
-    }
-
-    let gemini_api_key = if args.debug_mode.is_some() {
-        if is_interactive { println!("gem: DEBUG MODE ACTIVE"); }
-        else { println!("DEBUG MODE ACTIVE"); }
-        String::new()
-    } else {
-        match env::var("GEM_KEY") {
-            Ok(key) => key,
-            Err(_) => {
-                println!("gem: GEM_KEY environment variable not set, using fallback key.");
-                "AIzaSyDRuWmnT1X7VC_Ur-EkTqr62jrdQ78GDsw".to_string() // Fallback key
-            }
-        }
-    };
-
-    let session_id_str = format!("{:?}", args); // Use all args for session ID uniqueness
-    let session_id = Session::compute_hash(&session_id_str);
-    if is_interactive { println!("gem: Session ID: {}", session_id); }
-    else { println!("Session ID: {}", session_id); }
-
-    let mut session = Session::new(&session_id);
-
-    let llm_api_instance: Box<dyn LLMApi> = Box::new(RealLLMApi::new(gemini_api_key));
-
-    // Prioritize local model execution if --local is specified
     if args.local_model {
-        println!("gem: Local model mode activated.");
-        let prompt = if args.user_request.is_empty() {
-            // Provide a default prompt or handle empty request for local model as needed
-            "Default prompt for local Gemma: Please provide a summary of your capabilities.".to_string()
-        } else {
-            format!("Processing with local Gemma: {}", args.user_request)
-        };
-
-        match gemma::run_local_gemma(&prompt) {
-            Ok(response) => {
-                println!("gem: Local Gemma response:\n{}", response);
-                process::exit(0);
-            }
-            Err(e) => {
-                eprintln!("gem: Error during local Gemma execution: {}", e);
-                process::exit(1);
+        #[cfg(feature = "mistral_integration")]
+        {
+            // Mistral local inference path
+            match inference::InferenceEngine::initialize().await {
+                Ok(_) => {
+                    println!("Mistral Inference engine initialized.");
+                    match inference::InferenceEngine::generate_text(&user_request, 100).await {
+                        Ok(response) => {
+                            println!("\nLLM Response (Mistral):\n{}", response);
+                        }
+                        Err(e) => {
+                            eprintln!("Error generating LLM response from Mistral: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error initializing Mistral inference engine: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
-    }
-    // Check if browser mode is activated (only if local_model is false)
-    else if let Some(url) = &args.browser_url {
-        println!("gem: Browser mode activated for URL: {}", url);
-        let gemini_request_placeholder = "This is a test Gemini request for the browser."; // Placeholder
+        #[cfg(not(feature = "mistral_integration"))]
+        {
+            // Gemma local inference path
+            println!("Mistral integration not built. Using local Gemma model.");
+            match gemma::run_local_gemma(&user_request) {
+                Ok(response) => {
+                    println!("\nLLM Response (Gemma):\n{}", response);
+                }
+                Err(e) => {
+                    eprintln!("Error generating LLM response from Gemma: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    } else if args.browser_url.is_some() {
+        // Browser interaction path
+        println!("Browser URL specified. Initiating browser interaction.");
 
-        match browser_interaction::handle_browser_request(
+        // Extract necessary arguments for handle_browser_request
+        // The URL is guaranteed to be Some by the if condition.
+        let url = args.browser_url.as_ref().unwrap(); // Safe due to the if condition
+        let input_selector = args.input_selector.as_deref();
+        let codeblock_selector = args.codeblock_selector.as_deref();
+        let finished_selector = args.finished_selector.as_deref();
+
+        match gem::browser_interaction::execute_browser_interaction_task(
             url,
-            args.input_selector.as_deref(),
-            args.codeblock_selector.as_deref(),
-            args.finished_selector.as_deref(),
-            gemini_request_placeholder,
+            input_selector,
+            codeblock_selector,
+            finished_selector,
+            &user_request, // user_request is already prepared
         ) {
             Ok(code_blocks) => {
-                println!("gem: Successfully retrieved code from browser:");
-                for (i, block) in code_blocks.iter().enumerate() {
-                    println!("--- Code Block {} ---", i + 1);
-                    println!("{}", block);
-                    println!("--- End Code Block {} ---", i + 1);
+                if code_blocks.is_empty() {
+                    println!("Browser interaction completed. No code blocks were extracted.");
+                } else {
+                    println!("Browser interaction completed. Extracted code blocks:");
+                    for (i, block) in code_blocks.iter().enumerate() {
+                        println!("\n--- Code Block {} ---", i + 1);
+                        println!("{}", block);
+                        println!("--- End Code Block {} ---", i + 1);
+                    }
                 }
-                process::exit(0); // Successfully exit after browser interaction
             }
             Err(e) => {
-                eprintln!("gem: Error during browser interaction: {}", e);
-                process::exit(1); // Exit with error after browser interaction failure
+                eprintln!("Browser interaction failed: {}", e);
+                std::process::exit(1);
             }
         }
     } else {
-        // Call the main agent logic, now in the library
-        if let Err(e) = run_gem_agent(args, &mut session, llm_api_instance, is_interactive, project_root) {
-            eprintln!("gem: Critical error during agent execution: {}", e);
-            process::exit(1);
+        // Default to Gemini HTTP API via run_gem_agent
+        println!("Using Gemini HTTP API via run_gem_agent.");
+        let gemini_api_key = std::env::var("GEMINI_API_KEY")
+            .map_err(|e| {
+                eprintln!("Error: GEMINI_API_KEY environment variable not set or accessible.");
+                eprintln!("Please set GEMINI_API_KEY to use the Gemini API.");
+                eprintln!("Details: {}", e);
+                anyhow::anyhow!("GEMINI_API_KEY not found: {}", e) // Return an error that can be propagated or handled
+            })?;
+
+        if gemini_api_key.is_empty() {
+            eprintln!("Error: GEMINI_API_KEY is set but empty.");
+            eprintln!("Please ensure GEMINI_API_KEY has a valid value.");
+            std::process::exit(1);
+        }
+
+        let llm_api = gem::llm_api::RealLLMApi::new(gemini_api_key);
+
+        // Create a session ID based on the user request.
+        let session_id_str = format!("gem_session_{}", user_request.chars().take(20).collect::<String>());
+        let session_id = gem::cache::Session::compute_hash(&session_id_str);
+        let mut session = gem::cache::Session::new(&session_id);
+
+        let is_interactive = io::stdout().is_terminal();
+
+        // `args.project_root` is already a PathBuf.
+        // Clone project_root before moving args.
+        let project_root_clone = args.project_root.clone();
+        match gem::run_gem_agent(args, &mut session, Box::new(llm_api), is_interactive, project_root_clone) {
+            Ok(_) => println!("Gem agent finished successfully."),
+            Err(e) => {
+                eprintln!("Gem agent failed: {}", e);
+                std::process::exit(1);
+            }
         }
     }
-
     Ok(())
 }
-
-// All helper functions (check_dependencies, gather_initial_project_info, etc.)
-// and specific Gemini response structs (GeminiNeededItemsResponse, etc.)
-// and call_real_gemini_api, call_gemini_api_with_session, call_gemini_api_mock
-// have been moved to src/lib.rs or src/llm_api.rs within the gem library.

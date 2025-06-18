@@ -175,7 +175,7 @@ impl SymbolCollector {
 impl<'ast> Visit<'ast> for SymbolCollector {
     fn visit_item_struct(&mut self, i: &'ast ItemStruct) {
         let doc = self.extract_doc(&i.attrs);
-        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        let span_bytes = Some((syn::spanned::Spanned::span(i).byte_range().start, syn::spanned::Spanned::span(i).byte_range().end));
         self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Struct, doc, span_bytes);
 
         // Add fields
@@ -183,7 +183,7 @@ impl<'ast> Visit<'ast> for SymbolCollector {
             for field in &fields.named {
                 if let Some(ident) = &field.ident {
                     let field_doc = self.extract_doc(&field.attrs);
-                    let field_span_bytes = Some((syn::spanned::Spanned::span(field).start().byte, syn::spanned::Spanned::span(field).end().byte));
+                    let field_span_bytes = Some((syn::spanned::Spanned::span(field).byte_range().start, syn::spanned::Spanned::span(field).byte_range().end));
 
                     // Format field type if available
                     let mut hover_text = field_doc.clone(); // Clone field_doc as it's used later by itself
@@ -218,13 +218,13 @@ impl<'ast> Visit<'ast> for SymbolCollector {
 
     fn visit_item_enum(&mut self, i: &'ast ItemEnum) {
         let doc = self.extract_doc(&i.attrs);
-        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        let span_bytes = Some((syn::spanned::Spanned::span(i).byte_range().start, syn::spanned::Spanned::span(i).byte_range().end));
         self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Enum, doc, span_bytes);
 
         // Add variants
         for variant in &i.variants {
             let variant_doc = self.extract_doc(&variant.attrs);
-            let variant_span_bytes = Some((syn::spanned::Spanned::span(variant).start().byte, syn::spanned::Spanned::span(variant).end().byte));
+            let variant_span_bytes = Some((syn::spanned::Spanned::span(variant).byte_range().start, syn::spanned::Spanned::span(variant).byte_range().end));
 
             // Temporarily change current_path for add_symbol_with_span to correctly build the variant's full path
             let original_current_path = self.current_path.clone();
@@ -352,14 +352,14 @@ impl<'ast> Visit<'ast> for SymbolCollector {
 
         // Add attributes to hover text
         let hover_text = format!("{}\nSignature: {}", doc, signature);
-        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        let span_bytes = Some((syn::spanned::Spanned::span(i).byte_range().start, syn::spanned::Spanned::span(i).byte_range().end));
         self.add_symbol_with_span(&i.sig.ident.to_string(), symbol_type, hover_text, span_bytes);
         visit::visit_item_fn(self, i);
     }
 
     fn visit_impl_item_fn(&mut self, i: &'ast syn::ImplItemFn) {
         let doc = self.extract_doc(&i.attrs);
-        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        let span_bytes = Some((syn::spanned::Spanned::span(i).byte_range().start, syn::spanned::Spanned::span(i).byte_range().end));
 
         // Capture function signature
         let mut signature = String::new();
@@ -466,7 +466,7 @@ impl<'ast> Visit<'ast> for SymbolCollector {
 
     fn visit_item_trait(&mut self, i: &'ast ItemTrait) {
         let doc = self.extract_doc(&i.attrs);
-        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        let span_bytes = Some((syn::spanned::Spanned::span(i).byte_range().start, syn::spanned::Spanned::span(i).byte_range().end));
         self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Trait, doc, span_bytes);
 
         self.enter_module(&i.ident.to_string());
@@ -502,21 +502,21 @@ impl<'ast> Visit<'ast> for SymbolCollector {
 
     fn visit_item_const(&mut self, i: &'ast ItemConst) {
         let doc = self.extract_doc(&i.attrs);
-        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        let span_bytes = Some((syn::spanned::Spanned::span(i).byte_range().start, syn::spanned::Spanned::span(i).byte_range().end));
         self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Const, doc, span_bytes);
         visit::visit_item_const(self, i);
     }
 
     fn visit_item_static(&mut self, i: &'ast ItemStatic) {
         let doc = self.extract_doc(&i.attrs);
-        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        let span_bytes = Some((syn::spanned::Spanned::span(i).byte_range().start, syn::spanned::Spanned::span(i).byte_range().end));
         self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Static, doc, span_bytes);
         visit::visit_item_static(self, i);
     }
 
     fn visit_item_mod(&mut self, i: &'ast ItemMod) {
         let doc = self.extract_doc(&i.attrs);
-        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        let span_bytes = Some((syn::spanned::Spanned::span(i).byte_range().start, syn::spanned::Spanned::span(i).byte_range().end));
         self.add_symbol_with_span(&i.ident.to_string(), SymbolType::Module, doc, span_bytes);
 
         if let Some(content) = &i.content {
@@ -532,7 +532,7 @@ impl<'ast> Visit<'ast> for SymbolCollector {
 
     fn visit_item_type(&mut self, i: &'ast ItemType) {
         let doc = self.extract_doc(&i.attrs);
-        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        let span_bytes = Some((syn::spanned::Spanned::span(i).byte_range().start, syn::spanned::Spanned::span(i).byte_range().end));
         self.add_symbol_with_span(&i.ident.to_string(), SymbolType::TypeAlias, doc, span_bytes);
         visit::visit_item_type(self, i);
     }
@@ -543,7 +543,7 @@ impl<'ast> Visit<'ast> for SymbolCollector {
             .ident
             .as_ref()
             .map_or("unnamed_macro".to_string(), |id| id.to_string());
-        let span_bytes = Some((syn::spanned::Spanned::span(i).start().byte, syn::spanned::Spanned::span(i).end().byte));
+        let span_bytes = Some((syn::spanned::Spanned::span(i).byte_range().start, syn::spanned::Spanned::span(i).byte_range().end));
         self.add_symbol_with_span(&name, SymbolType::Macro, doc, span_bytes);
         visit::visit_item_macro(self, i);
     }

@@ -57,7 +57,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 // --- Main Agent Logic (moved from main.rs) ---
 pub fn run_gem_agent(
-    args: CustomCliArgs, // Use the one from cli.rs
+    mut args: CustomCliArgs, // Use the one from cli.rs, make mutable if user_request is joined into it
     session: &mut Session, // Use the one from cache.rs
     llm_api: Box<dyn LLMApi>, // Use the trait from llm_api.rs
     is_interactive: bool,
@@ -83,7 +83,13 @@ pub fn run_gem_agent(
     let initial_context = gather_initial_project_info(&project_root)?;
     if let Some(p) = &pb { p.finish_with_message("Initial information gathered."); pb = None; }
 
-    let first_prompt = construct_first_gemini_prompt(&args.user_request, &initial_context);
+    // Construct user_request from user_request_parts
+    let user_request_str = args.user_request_parts.join(" ");
+    // If you need to store it back into args for consistent use (though it's not defined in CustomCliArgs struct)
+    // consider if CustomCliArgs should have a processed `user_request: String` field,
+    // or pass `user_request_str` around. For now, using `user_request_str`.
+
+    let first_prompt = construct_first_gemini_prompt(&user_request_str, &initial_context);
 
     if args.debug_mode == Some(crate::cli::DebugMode::Initial) { // Assuming cli::DebugMode is accessible
         println!("\n--- DEBUG: INITIAL PROMPT ---");
@@ -164,7 +170,8 @@ pub fn run_gem_agent(
         session.save()?;
         current_needed_items.clear();
 
-        let sufficiency_prompt = construct_sufficiency_check_prompt(&args.user_request, &gathered_data_for_gemini);
+        let user_request_str = args.user_request_parts.join(" "); // Reconstruct here too or pass around
+        let sufficiency_prompt = construct_sufficiency_check_prompt(&user_request_str, &gathered_data_for_gemini);
         session.append_to_prompt("sufficient", &sufficiency_prompt)?;
 
         if args.debug_mode == Some(crate::cli::DebugMode::Sufficient) {
@@ -229,7 +236,8 @@ pub fn run_gem_agent(
             println!("\ngem: Phase 3: Code Generation & Verification Attempt {}/{}...", verification_attempt, args.max_verify_retries + 1);
         }
 
-        let code_gen_prompt = construct_code_generation_prompt(&args.user_request, &gathered_data_for_gemini, !args.no_test, if verification_attempt > 1 { Some(&verification_failures_context) } else { None }, &args.verify_with);
+        let user_request_str = args.user_request_parts.join(" "); // Reconstruct here too or pass around
+        let code_gen_prompt = construct_code_generation_prompt(&user_request_str, &gathered_data_for_gemini, !args.no_test, if verification_attempt > 1 { Some(&verification_failures_context) } else { None }, &args.verify_with);
         session.append_to_prompt("change", &code_gen_prompt)?;
 
         if args.debug_mode == Some(crate::cli::DebugMode::Changes) && verification_attempt == 1 {
@@ -307,7 +315,8 @@ pub fn run_gem_agent(
                 else { println!("Verification successful!"); }
                 println!("Output:\n{}", output);
 
-                let commit_message = format!("gem: Automated change for \"{}\"\n\n{}\n\n", args.user_request, code_gen_response.explanation);
+                let user_request_str = args.user_request_parts.join(" "); // Reconstruct here too or pass around
+                let commit_message = format!("gem: Automated change for \"{}\"\n\n{}\n\n", user_request_str, code_gen_response.explanation);
                 git_commit_mock(&project_root, &commit_message, verification_attempt > 1)?;
                 println!("\ngem: Task completed successfully.");
                 return Ok(());

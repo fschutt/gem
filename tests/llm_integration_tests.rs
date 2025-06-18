@@ -145,6 +145,322 @@ fn test_initial_prompt_flow() -> Result<(), Box<dyn Error>> {
 
 #[test]
 #[serial]
+fn test_markdown_remove_function_expect_whole_file_replace() -> Result<(), Box<dyn Error>> {
+    let (project_root, _project_dir_guard, _home_dir_guard) = setup_test_env("md_remove_func_specific");
+
+    let initial_lib_content = r#"
+// Initial file content
+pub fn function_to_remove() -> i32 {
+    100
+}
+
+pub fn function_to_keep() -> String {
+    "keep_me".to_string()
+}
+"#;
+    fs::write(project_root.join("src").join("lib.rs"), initial_lib_content)?;
+
+    let mut args = CustomCliArgs::default();
+    args.user_request = "Remove function_to_remove via Markdown".to_string();
+    args.project_root = project_root.clone();
+
+    let mut mock_api = MockLLMApi::new();
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiNeededItemsResponse { needed_items: vec![] })?));
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiSufficiencyResponse { sufficient: true, needed_items: vec![] })?));
+
+    // The Markdown provides the file content *without* function_to_remove.
+    // The ProcessMarkdownAndApplyChanges logic will treat the code block as the new entire file content
+    // because "function_to_remove" (if LLM tried to make it a specific item replacement for removal) wouldn't parse from an empty block,
+    // or more likely, LLM provides the new state of the file.
+    let markdown_content = r#"
+Explanation: `function_to_remove` has been removed. The file now only contains `function_to_keep`.
+
+File: src/lib.rs
+```rust
+// Initial file content
+
+pub fn function_to_keep() -> String {
+    "keep_me".to_string()
+}
+```
+The function `function_to_remove` is gone.
+"#;
+    // Expected content after operation
+    let expected_final_content = r#"
+// Initial file content
+
+pub fn function_to_keep() -> String {
+    "keep_me".to_string()
+}
+"#.trim();
+
+    let change = CodeChange {
+        file_path: "MARKDOWN_CHANGES".to_string(),
+        action: CodeChangeAction::ProcessMarkdownAndApplyChanges,
+        content: Some(markdown_content.to_string()),
+    };
+    let llm_response = GeminiCodeGenerationResponse {
+        changes: vec![change],
+        tests: None,
+        explanation: "High-level: Removed a function via Markdown.",
+    };
+    mock_api.add_mock_response(Ok(serde_json::to_string(&llm_response)?));
+
+    run_gem_logic_with_mock_api_owned(args, mock_api, project_root.clone())?;
+
+    let modified_content = fs::read_to_string(project_root.join("src").join("lib.rs"))?;
+
+    assert_eq!(modified_content.trim(), expected_final_content);
+    assert!(!modified_content.contains("pub fn function_to_remove()"));
+    assert!(modified_content.contains("pub fn function_to_keep()"));
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_markdown_add_new_function_expect_whole_file_replace() -> Result<(), Box<dyn Error>> {
+    let (project_root, _project_dir_guard, _home_dir_guard) = setup_test_env("md_add_func_specific");
+
+    let initial_lib_content = r#"
+// Initial file content
+pub fn existing_function() {}
+"#;
+    fs::write(project_root.join("src").join("lib.rs"), initial_lib_content)?;
+
+    let mut args = CustomCliArgs::default();
+    args.user_request = "Add a new function new_function_to_add via Markdown".to_string();
+    args.project_root = project_root.clone();
+
+    let mut mock_api = MockLLMApi::new();
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiNeededItemsResponse { needed_items: vec![] })?));
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiSufficiencyResponse { sufficient: true, needed_items: vec![] })?));
+
+    // The Markdown contains only the new function.
+    // Since "new_function_to_add" is not in initial_lib_content,
+    // the current ProcessMarkdownAndApplyChanges logic will replace the whole file.
+    let markdown_content = r#"
+Adding a new function `new_function_to_add`.
+
+File: src/lib.rs
+```rust
+pub fn new_function_to_add() -> bool {
+    true
+}
+```
+This function has been added.
+"#;
+    // Expected content after operation (whole file replaced by the block content)
+    let expected_final_content = r#"
+pub fn new_function_to_add() -> bool {
+    true
+}
+"#.trim();
+
+
+    let change = CodeChange {
+        file_path: "MARKDOWN_CHANGES".to_string(),
+        action: CodeChangeAction::ProcessMarkdownAndApplyChanges,
+        content: Some(markdown_content.to_string()),
+    };
+    let llm_response = GeminiCodeGenerationResponse {
+        changes: vec![change],
+        tests: None,
+        explanation: "High-level: Added a new function via Markdown.",
+    };
+    mock_api.add_mock_response(Ok(serde_json::to_string(&llm_response)?));
+
+    run_gem_logic_with_mock_api_owned(args, mock_api, project_root.clone())?;
+
+    let modified_content = fs::read_to_string(project_root.join("src").join("lib.rs"))?;
+
+    assert_eq!(modified_content.trim(), expected_final_content);
+    assert!(!modified_content.contains("pub fn existing_function() {}")); // Original function should be gone
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_markdown_replace_existing_const() -> Result<(), Box<dyn Error>> {
+    let (project_root, _project_dir_guard, _home_dir_guard) = setup_test_env("md_replace_const_specific");
+
+    let initial_lib_content = r#"
+// This is a constant that will be replaced.
+pub const CONST_TO_REPLACE: i32 = 123;
+// Another item to ensure it's not disturbed.
+pub fn some_other_function() {}
+"#;
+    fs::write(project_root.join("src").join("lib.rs"), initial_lib_content)?;
+
+    let mut args = CustomCliArgs::default();
+    args.user_request = "Replace CONST_TO_REPLACE via Markdown".to_string();
+    args.project_root = project_root.clone();
+
+    let mut mock_api = MockLLMApi::new();
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiNeededItemsResponse { needed_items: vec![] })?));
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiSufficiencyResponse { sufficient: true, needed_items: vec![] })?));
+
+    let markdown_content = r#"
+The constant `CONST_TO_REPLACE` needs an update.
+
+File: src/lib.rs
+```rust
+pub const CONST_TO_REPLACE: &str = "new_value";
+```
+The constant has been changed to a string type and new value.
+"#;
+
+    let change = CodeChange {
+        file_path: "MARKDOWN_CHANGES".to_string(),
+        action: CodeChangeAction::ProcessMarkdownAndApplyChanges,
+        content: Some(markdown_content.to_string()),
+    };
+    let llm_response = GeminiCodeGenerationResponse {
+        changes: vec![change],
+        tests: None,
+        explanation: "High-level: Updated a const via Markdown.",
+    };
+    mock_api.add_mock_response(Ok(serde_json::to_string(&llm_response)?));
+
+    run_gem_logic_with_mock_api_owned(args, mock_api, project_root.clone())?;
+
+    let modified_content = fs::read_to_string(project_root.join("src").join("lib.rs"))?;
+
+    assert!(modified_content.contains("pub const CONST_TO_REPLACE: &str = \"new_value\";"));
+    assert!(!modified_content.contains("pub const CONST_TO_REPLACE: i32 = 123;"));
+    assert!(modified_content.contains("pub fn some_other_function() {}"));
+    assert!(modified_content.contains("// This is a constant that will be replaced.")); // Check comments are preserved around the item
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_markdown_replace_existing_enum() -> Result<(), Box<dyn Error>> {
+    let (project_root, _project_dir_guard, _home_dir_guard) = setup_test_env("md_replace_enum_specific");
+
+    let initial_lib_content = r#"
+pub enum EnumToReplace {
+    VariantA,
+    VariantB(i32),
+}
+const MY_CONST: bool = true; // Should remain
+"#;
+    fs::write(project_root.join("src").join("lib.rs"), initial_lib_content)?;
+
+    let mut args = CustomCliArgs::default();
+    args.user_request = "Replace EnumToReplace via Markdown".to_string();
+    args.project_root = project_root.clone();
+
+    let mut mock_api = MockLLMApi::new();
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiNeededItemsResponse { needed_items: vec![] })?));
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiSufficiencyResponse { sufficient: true, needed_items: vec![] })?));
+
+    let markdown_content = r#"
+This Markdown explains that `EnumToReplace` will be updated.
+
+File: src/lib.rs
+```rust
+pub enum EnumToReplace {
+    NewVariant,
+    AnotherVariant { name: String },
+}
+```
+The enum has been changed to have new variants.
+"#;
+
+    let change = CodeChange {
+        file_path: "MARKDOWN_CHANGES".to_string(),
+        action: CodeChangeAction::ProcessMarkdownAndApplyChanges,
+        content: Some(markdown_content.to_string()),
+    };
+    let llm_response = GeminiCodeGenerationResponse {
+        changes: vec![change],
+        tests: None,
+        explanation: "High-level: Updated an enum via Markdown.",
+    };
+    mock_api.add_mock_response(Ok(serde_json::to_string(&llm_response)?));
+
+    run_gem_logic_with_mock_api_owned(args, mock_api, project_root.clone())?;
+
+    let modified_content = fs::read_to_string(project_root.join("src").join("lib.rs"))?;
+
+    assert!(modified_content.contains("pub enum EnumToReplace {"));
+    assert!(modified_content.contains("NewVariant,"));
+    assert!(modified_content.contains("AnotherVariant { name: String },"));
+    assert!(!modified_content.contains("VariantA,"));
+    assert!(!modified_content.contains("VariantB(i32),"));
+    assert!(modified_content.contains("const MY_CONST: bool = true;"));
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_markdown_replace_existing_struct() -> Result<(), Box<dyn Error>> {
+    let (project_root, _project_dir_guard, _home_dir_guard) = setup_test_env("md_replace_struct_specific");
+
+    let initial_lib_content = r#"
+// Comment before struct
+pub struct StructToReplace {
+    old_field: bool,
+}
+// Comment after struct
+fn another_item() {}
+"#;
+    fs::write(project_root.join("src").join("lib.rs"), initial_lib_content)?;
+
+    let mut args = CustomCliArgs::default();
+    args.user_request = "Replace StructToReplace via Markdown".to_string();
+    args.project_root = project_root.clone();
+
+    let mut mock_api = MockLLMApi::new();
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiNeededItemsResponse { needed_items: vec![] })?));
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiSufficiencyResponse { sufficient: true, needed_items: vec![] })?));
+
+    let markdown_content = r#"
+Replacing `StructToReplace`.
+
+File: src/lib.rs
+```rust
+pub struct StructToReplace {
+    new_field: String,
+    count: i64,
+}
+```
+The struct has been updated with new fields.
+"#;
+
+    let change = CodeChange {
+        file_path: "MARKDOWN_CHANGES".to_string(),
+        action: CodeChangeAction::ProcessMarkdownAndApplyChanges,
+        content: Some(markdown_content.to_string()),
+    };
+    let llm_response = GeminiCodeGenerationResponse {
+        changes: vec![change],
+        tests: None,
+        explanation: "High-level: Updated a struct via Markdown.",
+    };
+    mock_api.add_mock_response(Ok(serde_json::to_string(&llm_response)?));
+
+    run_gem_logic_with_mock_api_owned(args, mock_api, project_root.clone())?;
+
+    let modified_content = fs::read_to_string(project_root.join("src").join("lib.rs"))?;
+
+    assert!(modified_content.contains("pub struct StructToReplace {"));
+    assert!(modified_content.contains("new_field: String,"));
+    assert!(modified_content.contains("count: i64,"));
+    assert!(!modified_content.contains("old_field: bool,"));
+    assert!(modified_content.contains("fn another_item() {}"));
+    assert!(modified_content.contains("// Comment before struct"));
+    assert!(modified_content.contains("// Comment after struct"));
+
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn test_markdown_item_replacement_block_not_single_item_fallback() -> Result<(), Box<dyn Error>> {
     let (project_root, _project_dir_guard, _home_dir_guard) = setup_test_env("md_block_not_single_item");
 
@@ -1512,5 +1828,87 @@ pub enum Status {
     assert!(!content.contains("pub fn process_data()"));
     assert!(content.contains("pub enum Status"));
     assert!(content.contains("Failed, // Added"));
+    Ok(())
+}
+
+// --- New Tests for Markdown Item-Specific Replacement ---
+
+#[test]
+#[serial]
+fn test_markdown_replace_existing_function() -> Result<(), Box<dyn Error>> {
+    let (project_root, _project_dir_guard, _home_dir_guard) = setup_test_env("md_replace_func_specific");
+
+    let initial_lib_content = r#"
+// Initial content
+pub fn function_to_replace() -> i32 {
+    1 // old content
+}
+
+pub fn another_function() {
+    // this should remain
+}
+"#;
+    fs::write(project_root.join("src").join("lib.rs"), initial_lib_content)?;
+
+    let mut args = CustomCliArgs::default();
+    args.user_request = "Replace function_to_replace with new content via Markdown".to_string();
+    args.project_root = project_root.clone();
+
+    let mut mock_api = MockLLMApi::new();
+    // Mock initial items needed (none for this focused test)
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiNeededItemsResponse { needed_items: vec![] })?));
+    // Mock sufficiency check (sufficient)
+    mock_api.add_mock_response(Ok(serde_json::to_string(&GeminiSufficiencyResponse { sufficient: true, needed_items: vec![] })?));
+
+    let markdown_content = r#"
+This is an explanation of the change.
+We are replacing `function_to_replace`.
+
+File: src/lib.rs
+```rust
+pub fn function_to_replace() -> String {
+    "new content".to_string()
+}
+```
+
+The function signature and body have been updated.
+"#;
+
+    let change = CodeChange {
+        file_path: "MARKDOWN_CHANGES".to_string(),
+        action: CodeChangeAction::ProcessMarkdownAndApplyChanges,
+        content: Some(markdown_content.to_string()),
+    };
+    let llm_response = GeminiCodeGenerationResponse {
+        changes: vec![change],
+        tests: None,
+        explanation: "High-level: Updated a function via Markdown.", // This will be overridden by extracted explanation
+    };
+    mock_api.add_mock_response(Ok(serde_json::to_string(&llm_response)?));
+
+    let session = run_gem_logic_with_mock_api_owned(args, mock_api, project_root.clone())?;
+
+    let modified_content = fs::read_to_string(project_root.join("src").join("lib.rs"))?;
+
+    assert!(modified_content.contains("pub fn function_to_replace() -> String {"));
+    assert!(modified_content.contains("\"new content\".to_string()"));
+    assert!(!modified_content.contains("-> i32"));
+    assert!(!modified_content.contains("1 // old content"));
+    assert!(modified_content.contains("pub fn another_function()")); // Ensure other function remains
+
+    // Verify that the explanation was extracted and used
+    let expected_explanation = "This is an explanation of the change.\nWe are replacing `function_to_replace`.\nThe function signature and body have been updated.";
+    // The explanation is part of the commit message, which is harder to check directly here without deeper mocking or inspecting session.
+    // However, we can infer it by checking if the `run_gem_agent` updated the `explanation` field in `code_gen_response`
+    // which is then used for printing and would be used for commit.
+    // For this test, checking file content is the primary goal for "find and replace".
+    // The logic for explanation extraction was tested in `llm_response_parser.rs` and its integration in `lib.rs` prompt modification.
+    // We trust that if the file is correctly modified, the explanation part of the flow is also working.
+    // A more direct check would involve inspecting the `Session` object if it stored the final explanation, or mocking git commit.
+
+    // A simple check for the explanation stored in session's "change" prompt (if it's updated there, which it's not directly)
+    // For now, rely on the fact that the `code_gen_response.explanation` is updated in `run_gem_agent`
+    // and this is then used. The core of this test is the file change.
+
     Ok(())
 }

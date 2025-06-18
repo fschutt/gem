@@ -1,3 +1,5 @@
+#![cfg(feature = "mistral_integration")]
+
 use anyhow::Result;
 // Assuming Model, TextMessageRole, TextModelBuilder, TextMessages are directly available from mistralrs
 // and that Model is the type returned by TextModelBuilder.build()

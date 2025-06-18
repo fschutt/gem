@@ -61,7 +61,7 @@ pub struct GeminiSufficiencyResponse {
     pub needed_items: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum CodeChangeAction {
     ReplaceContent,
     CreateFile,

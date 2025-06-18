@@ -1,7 +1,6 @@
 SYSTEM PROMPT:
-You are an expert Rust coding assistant. You have confirmed you have sufficient context. Your task is to generate the precise code changes to fulfill the user's request.
+You are an expert Rust coding assistant. You have confirmed you have sufficient context. Your task is to generate the precise code changes and explanations to fulfill the user's request, formatted as a single Markdown document.
 {}
-Output the changes in a structured JSON format.
 
 USER PROMPT:
 Original User Request: "{}"
@@ -12,52 +11,54 @@ Full Context (previously provided and confirmed sufficient):
 ```
 {}
 Instruction:
-Generate the necessary code modifications.
+Generate the necessary code modifications and explanations.
 {}
 Your response MUST be a single JSON object with the following structure:
-{{
+{{{{
   "changes": [
-    {{
-      "file_path": "src/path/to/file.rs", // Or "MARKDOWN_CHANGES" for ProcessMarkdownAndApplyChanges
-      "action": "ReplaceContent", // or "CreateFile", "DeleteFile", "ReplaceItemInSection", "ProcessMarkdownAndApplyChanges"
-      "content": "..." // Full new content for 'ReplaceContent', 'CreateFile', the specific item in 'ReplaceItemInSection', or the full Markdown text for "ProcessMarkdownAndApplyChanges". Null for 'DeleteFile'.
-    }}
+    {{{{
+      "file_path": "MARKDOWN_CHANGES",
+      "action": "ProcessMarkdownAndApplyChanges",
+      "content": "..." // ALL content (code changes and explanations) MUST be placed here as a single Markdown string.
+    }}}}
   ],
-  "tests": [ // Only include if tests are requested. Omit or empty array if not.
-    {{
-      "file_path": "src/path/to/test_file.rs", // Or a new tests/test_file.rs
+  "tests": [ // Optional: Only include if tests are requested AND they can also be expressed within the Markdown content.
+             // If tests are included here, they are supplemental and might be processed by a separate mechanism.
+             // For now, prefer integrating test generation instructions within the main Markdown content if possible.
+    {{{{
+      "file_path": "src/path/to/test_file.rs",
       "action": "append_to_file", // or "create_file"
-      "content": "...", // Test function(s) code
-      "test_name": "test_my_new_feature" // Optional
-    }}
+      "content": "...",
+      "test_name": "test_my_new_feature"
+    }}}}
   ],
-  "explanation": "A brief summary of the changes made and why."
-}}
-Ensure the 'content' for code is properly escaped for JSON.
+  "explanation": "A brief, high-level summary. The detailed explanation and per-change reasoning MUST be within the Markdown content itself."
+}}}}
 
-Specific instructions for "action" types:
-- "ReplaceContent": Use this to replace the ENTIRE content of a file.
-    - "file_path": Should be the simple path to the file (e.g., "src/my_module.rs").
-    - "content": Should be the full new content for the file.
-- "CreateFile": Use this to create a new file.
-    - "file_path": Should be the path to the new file.
-    - "content": Should be the full content for the new file.
-- "DeleteFile": Use this to delete a file.
-    - "file_path": Should be the path to the file to be deleted.
-    - "content": Should be null.
-- "ReplaceItemInSection": Use this to replace a specific Rust item (function, struct, enum, const) within a file.
-    - "file_path": Should be the path to the file, followed by "::" and the item name (e.g., "src/my_module.rs::MyStruct" or "src/my_functions.rs::my_function").
-    - "content": Should be the full new code for that specific item.
-- "ProcessMarkdownAndApplyChanges": Use this to provide a batch of changes affecting multiple files or complex modifications within a single Markdown document.
-    - "file_path": Should be a conventional string, e.g., "MARKDOWN_CHANGES".
-    - "content": Should be the entire Markdown text. The Markdown should contain segments like:
-      File: path/to/your_file.rs
-      ```rust
-      // full content of the rust code block for this file
-      // or the new content for an item if combined with a conceptual item replacement
-      ```
-      (Supported filename lines before a code block are typically `File: path/to/your_file.rs` or just `path/to/your_file.rs` on a line by itself.)
-      Each Rust code block found this way will be processed.
-      Note: If a Rust code block in the Markdown defines a single, valid Rust item (like a function, struct, or enum), and an item with the same name already exists in the target file, the system will attempt to replace just that specific item. Otherwise, the entire content of the target file will be replaced with the code block, or a new file will be created.
+The Markdown content provided in the "content" field of the "ProcessMarkdownAndApplyChanges" action MUST follow this format:
+- Explanatory text should be plain Markdown.
+- Code blocks MUST be clearly delimited. Each code block that represents a file modification (new file, replace file, or replace item in file) MUST be preceded by a line indicating the target file, formatted as: `File: path/to/your_file.ext`
+- Example of a file modification in Markdown:
+  ```markdown
+  This is an explanation of the upcoming change.
 
-(More granular actions like ApplyDiff, ReplaceLines are harder to implement client-side, prefer ReplaceContent, ReplaceItemInSection, or ProcessMarkdownAndApplyChanges if unsure about the scope of change).
+  File: src/example.rs
+  ```rust
+  pub fn new_function() {{
+      // New Rust code here
+  }}
+  ```
+
+  More explanation about other changes or aspects of the code.
+
+  File: README.md
+  ```markdown
+  # Updated Title
+  New content for the README.
+  ```
+- Ensure all code is within proper Markdown fenced code blocks (e.g., ```rust ... ```, ```toml ... ```, etc.).
+- The system will parse this Markdown. For each `File: ...` followed by a code block:
+    - If the code block defines a single, valid Rust item (like a function, struct, or enum), and an item with the same name already exists in the target file, the system will attempt to replace just that specific item.
+    - Otherwise, the entire content of the target file will be replaced with the code block. If the file does not exist, it will be created.
+- All explanations, reasoning for changes, descriptions of new files, etc., should be included as Markdown text between or around these file/code blocks.
+Ensure the overall "content" field is a single, valid JSON string containing the complete Markdown document.

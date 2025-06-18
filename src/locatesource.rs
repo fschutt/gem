@@ -123,7 +123,7 @@ fn get_cargo_metadata(project_root: &Path) -> Result<CargoMetadata> {
     }
 
     // Normal execution
-    let check_status = Command::new("cargo")
+    let _check_status = Command::new("cargo")
         .arg("check")
         .arg("--quiet")
         .current_dir(project_root)

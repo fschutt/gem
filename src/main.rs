@@ -33,7 +33,21 @@ async fn main() -> Result<()> {
 
     println!("Processing request: {}", user_request);
 
-    if args.local_model {
+    // Handle new boolean flags with stub implementations
+    if args.no_explanation {
+        println!("--no-explanation recognized. Detailed explanations will be suppressed (Not yet fully implemented).");
+    }
+    if args.no_code {
+        println!("--no-code recognized. Code output will be suppressed (Not yet fully implemented).");
+    }
+    if args.no_readme {
+        println!("--no-readme recognized. README generation/update will be skipped (Not yet fully implemented).");
+    }
+    if args.auto_tool_selection {
+        println!("--auto-tool-selection recognized. Tools will be selected automatically (Not yet fully implemented).");
+    }
+
+    if args.local {
         #[cfg(feature = "mistral_integration")]
         {
             // Mistral local inference path
@@ -70,13 +84,13 @@ async fn main() -> Result<()> {
                 }
             }
         }
-    } else if args.browser_url.is_some() {
+    } else if args.browser.is_some() {
         // Browser interaction path
         println!("Browser URL specified. Initiating browser interaction.");
 
         // Extract necessary arguments for handle_browser_request
         // The URL is guaranteed to be Some by the if condition.
-        let url = args.browser_url.as_ref().unwrap(); // Safe due to the if condition
+        let url = args.browser.as_ref().unwrap(); // Safe due to the if condition
         let input_selector = args.input_selector.as_deref();
         let codeblock_selector = args.codeblock_selector.as_deref();
         let finished_selector = args.finished_selector.as_deref();

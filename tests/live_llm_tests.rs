@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
     use gem::run_gem_agent;
-    use gem::cli::CustomCliArgs;
+    use gem::cli::{CustomCliArgs, MAX_DATA_GATHERING_ITERATIONS_DEFAULT, MAX_VERIFICATION_RETRIES_DEFAULT}; // Added more imports
     use gem::cache::Session;
-    use gem::llm_api::{RealLLMApi, LLMApi}; // LLMApi might not be needed if just using RealLLMApi
+    use gem::llm_api::RealLLMApi; // LLMApi removed as it's unused
 
     use std::path::PathBuf;
     use tempfile::{tempdir, TempDir};
@@ -13,7 +13,7 @@ mod tests {
 
     // Re-using a setup similar to llm_integration_tests.rs
     // Returns project_root, guard for project_root, guard for home_dir
-    fn setup_test_project_env(test_name: &str) -> (PathBuf, TempDir, TempDir) {
+    fn setup_test_project_env(_test_name: &str) -> (PathBuf, TempDir, TempDir) { // Prefixed test_name
         let temp_project_dir_guard = tempdir().unwrap();
         let project_root = temp_project_dir_guard.path().to_path_buf();
 
@@ -43,11 +43,25 @@ mod tests {
         let (project_root, _project_dir_guard, _home_dir_guard) =
             setup_test_project_env("live_create_simple_fn");
 
-        let mut args = CustomCliArgs::default();
-        args.user_request = "add a public function named `say_hello` to `src/lib.rs` that takes no arguments and returns the string \"hello live\". Also add a test for it.".to_string();
-        args.project_root = project_root.clone();
-        args.verify_with = "cargo test".to_string(); // Use cargo test for verification
-        args.no_test = false; // We want it to generate tests
+        let args = CustomCliArgs {
+            user_request_parts: vec!["add a public function named `say_hello` to `src/lib.rs` that takes no arguments and returns the string \"hello live\". Also add a test for it.".to_string()],
+            project_root: project_root.clone(),
+            verify_with: "cargo test".to_string(),
+            no_test: false,
+            project_file: None,
+            max_data_loops: MAX_DATA_GATHERING_ITERATIONS_DEFAULT,
+            max_verify_retries: MAX_VERIFICATION_RETRIES_DEFAULT,
+            debug_mode: None,
+            no_explanation: false,
+            no_code: false,
+            no_readme: false,
+            auto_tool_selection: false,
+            browser: None,
+            input_selector: None,
+            codeblock_selector: None,
+            finished_selector: None,
+            local: false,
+        };
         // args.max_data_loops = 1; // Potentially limit loops for a simple task
         // args.max_verify_retries = 1;
 

@@ -167,6 +167,7 @@ impl SymbolCollector {
         doc
     }
 
+    #[allow(dead_code)]
     fn has_async_attr(&self, attrs: &[syn::Attribute]) -> bool {
         attrs.iter().any(|attr| attr.path().is_ident("async"))
     }
@@ -735,25 +736,23 @@ impl SymbolHierarchy {
 
         // Find the enum in the hierarchy
         if let Some(enums) = self.symbols.get_mut("ENUMS") {
-            if let Some(enum_node) = enums.get_mut(enum_path) {
+            if let Some(SymbolNode::Leaf { .. }) = enums.get_mut(enum_path) {
                 // Add the variant as a child of the enum
-                if let SymbolNode::Leaf { .. } = enum_node {
-                    // If this is the first variant, initialize the enum as a parent
-                    // TODO: This logic for replacing the enum leaf is incomplete and might not correctly
-                    // handle multiple variants or preserve the original enum's documentation properly.
-                    // For now, focusing on using the variant's 'doc'.
-                    let mut variants = BTreeMap::new();
-                    variants.insert(
-                        name.to_string(),
-                        SymbolNode::EnumVariant {
-                            name: name.to_string(),
-                            doc: doc, // Use the variant's documentation passed as parameter
-                        },
-                    );
+                // If this is the first variant, initialize the enum as a parent
+                // TODO: This logic for replacing the enum leaf is incomplete and might not correctly
+                // handle multiple variants or preserve the original enum's documentation properly.
+                // For now, focusing on using the variant's 'doc'.
+                let mut variants = BTreeMap::new();
+                variants.insert(
+                    name.to_string(),
+                    SymbolNode::EnumVariant {
+                        name: name.to_string(),
+                        doc: doc,
+                    },
+                );
 
-                    // Replace the enum leaf with a parent node
-                    // (In a real implementation, you'd have a proper parent node type)
-                }
+                // Replace the enum leaf with a parent node
+                // (In a real implementation, you'd have a proper parent node type)
             }
         }
     }
@@ -1069,6 +1068,7 @@ fn extract_doc_comment(hover_text: &str) -> String {
     String::new()
 }
 
+#[allow(dead_code)]
 fn extract_rust_code_block(markdown: &str) -> String {
     // Regular expression to find Rust code blocks
     let re = Regex::new(r"```(?:rust|rs)\s*\n([\s\S]*?)```").unwrap();

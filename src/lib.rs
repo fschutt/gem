@@ -56,7 +56,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 // --- Main Agent Logic (moved from main.rs) ---
 pub fn run_gem_agent(
-    mut args: CustomCliArgs, // Use the one from cli.rs, make mutable if user_request is joined into it
+    args: CustomCliArgs, // Use the one from cli.rs, make mutable if user_request is joined into it
     session: &mut Session, // Use the one from cache.rs
     llm_api: Box<dyn LLMApi>, // Use the trait from llm_api.rs
     is_interactive: bool,
@@ -71,7 +71,7 @@ pub fn run_gem_agent(
         pb.as_ref().unwrap().enable_steady_tick(Duration::from_millis(100));
     }
     check_dependencies(&project_root)?;
-    if let Some(p) = &pb { p.finish_with_message("Dependencies OK."); pb = None; }
+    if let Some(p) = &pb { p.finish_with_message("Dependencies OK."); }
 
     if is_interactive {
         pb = Some(ProgressBar::new_spinner());
@@ -80,7 +80,7 @@ pub fn run_gem_agent(
         pb.as_ref().unwrap().enable_steady_tick(Duration::from_millis(100));
     }
     let initial_context = gather_initial_project_info(&project_root)?;
-    if let Some(p) = &pb { p.finish_with_message("Initial information gathered."); pb = None; }
+    if let Some(p) = &pb { p.finish_with_message("Initial information gathered."); }
 
     // Construct user_request from user_request_parts
     let user_request_str = args.user_request_parts.join(" ");
@@ -110,7 +110,7 @@ pub fn run_gem_agent(
         &first_prompt,
         FLASH_MODEL_NAME,
     );
-    if let Some(p) = &pb { p.finish_and_clear(); pb = None; }
+    if let Some(p) = &pb { p.finish_and_clear(); }
     let gemini_response_str = clean_gemini_api_json(gemini_response_str_result?);
 
     let needed_items_response: GeminiNeededItemsResponse =
@@ -120,7 +120,7 @@ pub fn run_gem_agent(
     let mut gathered_data_for_gemini: HashMap<String, String> = session.gathered_data.clone();
     let mut data_gathering_iterations = 0;
     let mut verification_attempt = 0;
-    let mut code_change_attempt = 0;
+    let _code_change_attempt = 0;
 
     loop { // Sufficiency Loop
         if data_gathering_iterations >= args.max_data_loops {
@@ -163,7 +163,7 @@ pub fn run_gem_agent(
                 p.finish_and_clear();
             }
         }
-        pb = None; // Reset progress bar after this section
+        // pb = None; // Reset progress bar after this section // This line is removed as pb is reassigned or goes out of scope
 
         session.save()?;
         current_needed_items.clear();
@@ -203,7 +203,7 @@ pub fn run_gem_agent(
             res
         };
 
-        if let Some(p) = &pb { p.finish_and_clear(); pb = None; }
+        if let Some(p) = &pb { p.finish_and_clear(); }
         let cleaned_response = clean_gemini_api_json(gemini_sufficiency_response_str_result?);
         let sufficiency_response: GeminiSufficiencyResponse = serde_json::from_str(&cleaned_response)?;
 
@@ -266,7 +266,7 @@ pub fn run_gem_agent(
             );
             res
         };
-        if let Some(p) = &pb { p.finish_and_clear(); pb = None; }
+        if let Some(p) = &pb { p.finish_and_clear(); }
         let mut code_gen_response: GeminiCodeGenerationResponse = serde_json::from_str(&gemini_code_gen_response_str_result?)?;
 
         // If ProcessMarkdownAndApplyChanges is used, extract explanation from the markdown content.
@@ -307,7 +307,7 @@ pub fn run_gem_agent(
                 // Optionally, provide more context or attempt rollback if applicable
                 e
             })?;
-        if let Some(p) = &pb { p.finish_with_message("Code changes applied."); pb = None; }
+        if let Some(p) = &pb { p.finish_with_message("Code changes applied."); }
 
         if !args.no_test {
             if let Some(tests) = &code_gen_response.tests {
@@ -318,7 +318,7 @@ pub fn run_gem_agent(
                     pb.as_ref().unwrap().enable_steady_tick(Duration::from_millis(100));
                 }
                 apply_tests_mock(&project_root, tests)?;
-                if let Some(p) = &pb { p.finish_with_message("Tests applied."); pb = None; }
+                if let Some(p) = &pb { p.finish_with_message("Tests applied."); }
             }
         }
 
@@ -331,7 +331,7 @@ pub fn run_gem_agent(
 
         match execute_verification_command_mock( &mut verification_attempt, &project_root, &args.verify_with) {
             Ok(output) => {
-                if let Some(p) = &pb { p.finish_with_message("Verification successful!"); pb = None; }
+                if let Some(p) = &pb { p.finish_with_message("Verification successful!"); }
                 else { println!("Verification successful!"); }
                 println!("Output:\n{}", output);
 
@@ -342,7 +342,7 @@ pub fn run_gem_agent(
                 return Ok(());
             }
             Err(e) => {
-                if let Some(p) = &pb { p.finish_with_message("Verification failed."); pb = None; }
+                if let Some(p) = &pb { p.finish_with_message("Verification failed."); }
                 else { println!("Verification failed."); }
                 verification_failures_context = e.to_string();
                 eprintln!("Error Output:\n{}", verification_failures_context);

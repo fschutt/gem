@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 /// Session manages both caching and persistent state across requests
 pub struct Session {
+    #[allow(dead_code)] // id is planned for future use (e.g., session resumption, logging)
     id: String,
     session_dir: PathBuf,
     pub gathered_data: HashMap<String, String>,
